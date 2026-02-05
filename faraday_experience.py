@@ -18,7 +18,12 @@ from faraday_monitor import (
     SignalSelection,
 )
 
-from experience_calculator import ExperienceCalculator, ExperienceConfig, ExperienceResult
+from experience_calculator import (
+    ExperienceCalculator,
+    ExperienceConfig,
+    ExperienceResult,
+    ResultWriteTarget,
+)
 from nas_config import NasInfluxDefaults, influx_cli_defaults, resolve_defaults
 
 
@@ -76,6 +81,17 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         default=os.getenv("H2_EFFICIENCY_FIELD", "value"),
         help="Field for efficiency values.",
     )
+    parser.add_argument(
+        "--efficiency-fixed-percent",
+        type=float,
+        default=float(os.getenv("H2_EFFICIENCY_FIXED_PERCENT", 60.0)),
+        help="Use this fixed efficiency percentage instead of querying (default: 60).",
+    )
+    parser.add_argument(
+        "--efficiency-use-signal",
+        action="store_true",
+        help="Ignore the fixed efficiency value and query Influx for efficiency readings.",
+    )
 
     parser.add_argument(
         "--range-window",
@@ -117,6 +133,32 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
     parser.set_defaults(efficiency_percent=True)
 
     parser.add_argument(
+        "--write-results",
+        action="store_true",
+        help="Persist the computed molar/volumetric rates back into InfluxDB.",
+    )
+    parser.add_argument(
+        "--result-bucket",
+        default=os.getenv("H2_RESULT_BUCKET"),
+        help="Bucket used when writing computed results (defaults to --current-bucket).",
+    )
+    parser.add_argument(
+        "--result-molar-measurement",
+        default=os.getenv("H2_RESULT_MOLAR_MEASUREMENT", "th_molar_rate"),
+        help="Measurement name for the theoretical molar rate.",
+    )
+    parser.add_argument(
+        "--result-volumetric-measurement",
+        default=os.getenv("H2_RESULT_VOL_MEASUREMENT", "th_volumetric_rate"),
+        help="Measurement name for the theoretical volumetric rate.",
+    )
+    parser.add_argument(
+        "--result-field",
+        default=os.getenv("H2_RESULT_FIELD", "value"),
+        help="Field name that stores computed rate values.",
+    )
+
+    parser.add_argument(
         "--log-level",
         default=os.getenv("H2_EXPERIENCE_LOG_LEVEL", "INFO"),
         help="Python logging level (DEBUG, INFO, ...).",
@@ -149,12 +191,22 @@ def build_config(args: argparse.Namespace) -> ExperienceConfig:
         args.current_measurement,
         args.current_field,
     )
-    efficiency_signal = _build_signal(
-        "efficiency",
-        args.efficiency_bucket,
-        args.efficiency_measurement,
-        args.efficiency_field,
-    )
+    efficiency_signal: Optional[SignalSelection] = None
+    efficiency_fixed_ratio: Optional[float] = None
+
+    if args.efficiency_use_signal:
+        efficiency_signal = _build_signal(
+            "efficiency",
+            args.efficiency_bucket,
+            args.efficiency_measurement,
+            args.efficiency_field,
+        )
+    else:
+        if args.efficiency_fixed_percent is None:
+            raise SystemExit(
+                "Provide --efficiency-fixed-percent or enable --efficiency-use-signal to fetch efficiency."
+            )
+        efficiency_fixed_ratio = args.efficiency_fixed_percent / 100.0
 
     return ExperienceConfig(
         url=args.url,
@@ -166,9 +218,28 @@ def build_config(args: argparse.Namespace) -> ExperienceConfig:
         current_signal=current_signal,
         efficiency_signal=efficiency_signal,
         efficiency_is_percent=args.efficiency_percent,
+        efficiency_fixed_ratio=efficiency_fixed_ratio,
         faraday_constant=args.faraday_constant,
         electrons_per_molecule=args.electrons_per_molecule,
         molar_volume=args.molar_volume,
+    )
+
+
+def build_result_target(args: argparse.Namespace) -> Optional[ResultWriteTarget]:
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or set --current-bucket so it can be reused."
+        )
+
+    return ResultWriteTarget(
+        bucket=bucket,
+        molar_measurement=args.result_molar_measurement,
+        volumetric_measurement=args.result_volumetric_measurement,
+        field=args.result_field,
     )
 
 
@@ -212,6 +283,7 @@ def main() -> None:
     args = parse_args(nas_defaults)
     configure_logging(args.log_level)
     config = build_config(args)
+    result_target = build_result_target(args)
 
     calculator = ExperienceCalculator(config)
     try:
@@ -220,6 +292,14 @@ def main() -> None:
         logging.exception("Experience computation failed: %s", exc)
         calculator.close()
         sys.exit(1)
+
+    if result_target:
+        try:
+            calculator.write_result(result, result_target)
+        except Exception as exc:  # pragma: no cover - write safeguard
+            logging.exception("Writing computed result failed: %s", exc)
+            calculator.close()
+            sys.exit(1)
     calculator.close()
 
     _emit_result(result, args.output)

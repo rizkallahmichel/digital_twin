@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from string import Template
 from typing import Optional, Tuple
 
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.exceptions import InfluxDBError
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 from faraday_monitor import SignalSelection
 
@@ -37,8 +38,9 @@ class ExperienceConfig:
     experience: str
     range_window: str
     current_signal: SignalSelection
-    efficiency_signal: SignalSelection
+    efficiency_signal: Optional[SignalSelection]
     efficiency_is_percent: bool
+    efficiency_fixed_ratio: Optional[float]
     faraday_constant: float
     electrons_per_molecule: float
     molar_volume: float
@@ -56,6 +58,16 @@ class ExperienceResult:
     volumetric_rate: float
 
 
+@dataclass(frozen=True)
+class ResultWriteTarget:
+    """Describes where the derived rates should be stored in InfluxDB."""
+
+    bucket: str
+    molar_measurement: str
+    volumetric_measurement: str
+    field: str = "value"
+
+
 class ExperienceCalculator:
     """Binds together the InfluxDB access and Faraday-law math for an experience."""
 
@@ -68,6 +80,7 @@ class ExperienceCalculator:
             timeout=60000,
         )
         self.query_api = self.client.query_api()
+        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
         self._denominator = config.electrons_per_molecule * config.faraday_constant
 
     def close(self) -> None:
@@ -81,16 +94,25 @@ class ExperienceCalculator:
                 f"bucket '{self.config.current_signal.bucket}'."
             )
 
-        efficiency_value, efficiency_time = self._fetch_latest(self.config.efficiency_signal)
-        if efficiency_value is None:
-            raise RuntimeError(
-                f"No efficiency reading found for experience '{self.config.experience}' in "
-                f"bucket '{self.config.efficiency_signal.bucket}'."
-            )
+        efficiency_value: Optional[float] = None
+        efficiency_time: Optional[datetime] = None
 
-        efficiency_ratio = (
-            efficiency_value / 100.0 if self.config.efficiency_is_percent else efficiency_value
-        )
+        if self.config.efficiency_fixed_ratio is not None:
+            efficiency_ratio = self.config.efficiency_fixed_ratio
+        else:
+            if self.config.efficiency_signal is None:
+                raise RuntimeError("Efficiency signal is not configured and no fixed ratio provided.")
+
+            efficiency_value, efficiency_time = self._fetch_latest(self.config.efficiency_signal)
+            if efficiency_value is None:
+                raise RuntimeError(
+                    f"No efficiency reading found for experience '{self.config.experience}' in "
+                    f"bucket '{self.config.efficiency_signal.bucket}'."
+                )
+
+            efficiency_ratio = (
+                efficiency_value / 100.0 if self.config.efficiency_is_percent else efficiency_value
+            )
         molar_rate = (efficiency_ratio * current_value) / self._denominator
         volumetric_rate = molar_rate * self.config.molar_volume
         timestamp = _pick_timestamp(current_time, efficiency_time)
@@ -103,6 +125,22 @@ class ExperienceCalculator:
             molar_rate=molar_rate,
             volumetric_rate=volumetric_rate,
         )
+
+    def write_result(self, result: ExperienceResult, target: ResultWriteTarget) -> None:
+        """Persist the derived molar/volumetric rates back to InfluxDB."""
+
+        points = [
+            Point(target.molar_measurement)
+            .tag(self.config.tag_key, self.config.experience)
+            .field(target.field, result.molar_rate)
+            .time(result.timestamp, WritePrecision.NS),
+            Point(target.volumetric_measurement)
+            .tag(self.config.tag_key, self.config.experience)
+            .field(target.field, result.volumetric_rate)
+            .time(result.timestamp, WritePrecision.NS),
+        ]
+
+        self.write_api.write(bucket=target.bucket, org=self.config.org, record=points)
 
     def _fetch_latest(self, signal: SignalSelection) -> Tuple[Optional[float], Optional[datetime]]:
         flux = self._build_query(signal)
