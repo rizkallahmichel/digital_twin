@@ -26,6 +26,12 @@ from lohc_rate_formula import (
     LohcRateResult,
     LohcRateWriteTarget,
 )
+from heat_balance_formula import (
+    HeatBalanceCalculator,
+    HeatBalanceConfig,
+    HeatBalanceResult,
+    HeatBalanceWriteTarget,
+)
 from nas_config import NasInfluxDefaults, influx_cli_defaults, resolve_defaults
 
 
@@ -48,9 +54,9 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
     parser.add_argument("experience", help="Experience/sensor tag value to filter on (e.g. test2).")
     parser.add_argument(
         "--formula",
-        choices=("faraday", "doh", "lohc_rate"),
+        choices=("faraday", "doh", "lohc_rate", "heat_balance"),
         default=os.getenv("H2_FORMULA", "faraday"),
-        help="Select which formula to run (faraday, doh, lohc_rate). Default: faraday.",
+        help="Select which formula to run (faraday, doh, lohc_rate, heat_balance). Default: faraday.",
     )
     parser.add_argument(
         "--tag-key",
@@ -541,6 +547,320 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         help="Measurement name for LOHC hydrogen storage rate outputs.",
     )
 
+    heat_group = parser.add_argument_group(
+        "Heat balance inputs",
+        "Arguments used when --formula heat_balance is selected.",
+    )
+    heat_group.add_argument(
+        "--heat-hydrogenation-rate-bucket",
+        default=os.getenv("HEAT_HYDROGENATION_RATE_BUCKET"),
+        help="Bucket storing LOHC hydrogenation rate (mol/s).",
+    )
+    heat_group.add_argument(
+        "--heat-hydrogenation-rate-measurement",
+        default=os.getenv("HEAT_HYDROGENATION_RATE_MEASUREMENT"),
+        help="Measurement storing hydrogenation rate readings.",
+    )
+    heat_group.add_argument(
+        "--heat-hydrogenation-rate-field",
+        default=os.getenv("HEAT_HYDROGENATION_RATE_FIELD", "value"),
+        help="Field storing hydrogenation rate readings.",
+    )
+    heat_group.add_argument(
+        "--heat-hydrogenation-rate-value",
+        type=float,
+        default=_env_float("HEAT_HYDROGENATION_RATE_VALUE"),
+        help="Fixed hydrogenation rate (mol/s).",
+    )
+    heat_group.add_argument(
+        "--heat-storage-multiplier",
+        type=float,
+        default=float(os.getenv("HEAT_STORAGE_MULTIPLIER", "4.0")),
+        help="Multiplier applied to hydrogenation rate to obtain hydrogen storage rate (default 4.0).",
+    )
+    heat_group.add_argument(
+        "--heat-reaction-enthalpy",
+        type=float,
+        default=float(os.getenv("HEAT_REACTION_ENTHALPY", "-56.97")),
+        help="Reaction enthalpy ΔH_hydro (kJ/mol H2). Default: -56.97.",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-mass-value",
+        type=float,
+        default=_env_float("HEAT_MIXTURE_MASS_VALUE"),
+        help="Fixed reaction mixture mass (kg).",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-mass-bucket",
+        default=os.getenv("HEAT_MIXTURE_MASS_BUCKET"),
+        help="Bucket storing reaction mixture mass readings.",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-mass-measurement",
+        default=os.getenv("HEAT_MIXTURE_MASS_MEASUREMENT"),
+        help="Measurement storing reaction mixture mass readings.",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-mass-field",
+        default=os.getenv("HEAT_MIXTURE_MASS_FIELD", "value"),
+        help="Field storing reaction mixture mass readings.",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-cp-value",
+        type=float,
+        default=_env_float("HEAT_MIXTURE_CP_VALUE"),
+        help="Fixed reaction mixture heat capacity (kJ/kg*K).",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-cp-bucket",
+        default=os.getenv("HEAT_MIXTURE_CP_BUCKET"),
+        help="Bucket storing reaction mixture heat capacity readings.",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-cp-measurement",
+        default=os.getenv("HEAT_MIXTURE_CP_MEASUREMENT"),
+        help="Measurement storing reaction mixture heat capacity readings.",
+    )
+    heat_group.add_argument(
+        "--heat-mixture-cp-field",
+        default=os.getenv("HEAT_MIXTURE_CP_FIELD", "value"),
+        help="Field storing reaction mixture heat capacity readings.",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-temp-bucket",
+        default=os.getenv("HEAT_REACTOR_TEMP_BUCKET"),
+        help="Bucket storing current reactor temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-temp-measurement",
+        default=os.getenv("HEAT_REACTOR_TEMP_MEASUREMENT"),
+        help="Measurement storing current reactor temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-temp-field",
+        default=os.getenv("HEAT_REACTOR_TEMP_FIELD", "value"),
+        help="Field storing current reactor temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-temp-value",
+        type=float,
+        default=_env_float("HEAT_REACTOR_TEMP_VALUE"),
+        help="Fixed current reactor temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-prev-temp-bucket",
+        default=os.getenv("HEAT_REACTOR_PREV_TEMP_BUCKET"),
+        help="Bucket storing previous reactor temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-prev-temp-measurement",
+        default=os.getenv("HEAT_REACTOR_PREV_TEMP_MEASUREMENT"),
+        help="Measurement storing previous reactor temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-prev-temp-field",
+        default=os.getenv("HEAT_REACTOR_PREV_TEMP_FIELD", "value"),
+        help="Field storing previous reactor temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-prev-temp-value",
+        type=float,
+        default=_env_float("HEAT_REACTOR_PREV_TEMP_VALUE"),
+        help="Fixed previous reactor temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-accu-interval-seconds",
+        type=float,
+        default=float(os.getenv("HEAT_ACCU_INTERVAL_SECONDS", "60.0")),
+        help="Time between Tr1 and Tr2 measurements in seconds (default: 60).",
+    )
+    heat_group.add_argument(
+        "--heat-jacket-temp-bucket",
+        default=os.getenv("HEAT_JACKET_TEMP_BUCKET"),
+        help="Bucket storing thermostat/jacket temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-jacket-temp-measurement",
+        default=os.getenv("HEAT_JACKET_TEMP_MEASUREMENT"),
+        help="Measurement storing thermostat temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-jacket-temp-field",
+        default=os.getenv("HEAT_JACKET_TEMP_FIELD", "value"),
+        help="Field storing thermostat temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-jacket-temp-value",
+        type=float,
+        default=_env_float("HEAT_JACKET_TEMP_VALUE"),
+        help="Fixed thermostat temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-ambient-temp-bucket",
+        default=os.getenv("HEAT_AMBIENT_TEMP_BUCKET"),
+        help="Bucket storing ambient temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-ambient-temp-measurement",
+        default=os.getenv("HEAT_AMBIENT_TEMP_MEASUREMENT"),
+        help="Measurement storing ambient temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-ambient-temp-field",
+        default=os.getenv("HEAT_AMBIENT_TEMP_FIELD", "value"),
+        help="Field storing ambient temperature.",
+    )
+    heat_group.add_argument(
+        "--heat-ambient-temp-value",
+        type=float,
+        default=_env_float("HEAT_AMBIENT_TEMP_VALUE"),
+        help="Fixed ambient temperature (°C).",
+    )
+    heat_group.add_argument(
+        "--heat-ua-value",
+        type=float,
+        default=_env_float("HEAT_UA_VALUE"),
+        help="Fixed UA coefficient (kJ/s/K).",
+    )
+    heat_group.add_argument(
+        "--heat-ua-bucket",
+        default=os.getenv("HEAT_UA_BUCKET"),
+        help="Bucket storing UA coefficient readings.",
+    )
+    heat_group.add_argument(
+        "--heat-ua-measurement",
+        default=os.getenv("HEAT_UA_MEASUREMENT"),
+        help="Measurement storing UA coefficient readings.",
+    )
+    heat_group.add_argument(
+        "--heat-ua-field",
+        default=os.getenv("HEAT_UA_FIELD", "value"),
+        help="Field storing UA coefficient readings.",
+    )
+    heat_group.add_argument(
+        "--heat-alpha-loss-value",
+        type=float,
+        default=_env_float("HEAT_ALPHA_LOSS_VALUE"),
+        help="Fixed α_loss coefficient (kJ/s/K).",
+    )
+    heat_group.add_argument(
+        "--heat-alpha-loss-bucket",
+        default=os.getenv("HEAT_ALPHA_LOSS_BUCKET"),
+        help="Bucket storing α_loss readings.",
+    )
+    heat_group.add_argument(
+        "--heat-alpha-loss-measurement",
+        default=os.getenv("HEAT_ALPHA_LOSS_MEASUREMENT"),
+        help="Measurement storing α_loss readings.",
+    )
+    heat_group.add_argument(
+        "--heat-alpha-loss-field",
+        default=os.getenv("HEAT_ALPHA_LOSS_FIELD", "value"),
+        help="Field storing α_loss readings.",
+    )
+    heat_group.add_argument(
+        "--heat-agitator-power-value",
+        type=float,
+        default=_env_float("HEAT_AGITATOR_POWER_VALUE"),
+        help="Fixed agitator power (kJ/s).",
+    )
+    heat_group.add_argument(
+        "--heat-agitator-power-bucket",
+        default=os.getenv("HEAT_AGITATOR_POWER_BUCKET"),
+        help="Bucket storing agitator power readings.",
+    )
+    heat_group.add_argument(
+        "--heat-agitator-power-measurement",
+        default=os.getenv("HEAT_AGITATOR_POWER_MEASUREMENT"),
+        help="Measurement storing agitator power readings.",
+    )
+    heat_group.add_argument(
+        "--heat-agitator-power-field",
+        default=os.getenv("HEAT_AGITATOR_POWER_FIELD", "value"),
+        help="Field storing agitator power readings.",
+    )
+    heat_group.add_argument(
+        "--heat-h2-mass-value",
+        type=float,
+        default=_env_float("HEAT_H2_MASS_VALUE"),
+        help="Fixed hydrogen mass for dosing term (kg).",
+    )
+    heat_group.add_argument(
+        "--heat-h2-mass-bucket",
+        default=os.getenv("HEAT_H2_MASS_BUCKET"),
+        help="Bucket storing hydrogen mass readings.",
+    )
+    heat_group.add_argument(
+        "--heat-h2-mass-measurement",
+        default=os.getenv("HEAT_H2_MASS_MEASUREMENT"),
+        help="Measurement storing hydrogen mass readings.",
+    )
+    heat_group.add_argument(
+        "--heat-h2-mass-field",
+        default=os.getenv("HEAT_H2_MASS_FIELD", "value"),
+        help="Field storing hydrogen mass readings.",
+    )
+    heat_group.add_argument(
+        "--heat-h2-cp-value",
+        type=float,
+        default=_env_float("HEAT_H2_CP_VALUE"),
+        help="Fixed hydrogen heat capacity (kJ/kg*K).",
+    )
+    heat_group.add_argument(
+        "--heat-h2-cp-bucket",
+        default=os.getenv("HEAT_H2_CP_BUCKET"),
+        help="Bucket storing hydrogen heat capacity readings.",
+    )
+    heat_group.add_argument(
+        "--heat-h2-cp-measurement",
+        default=os.getenv("HEAT_H2_CP_MEASUREMENT"),
+        help="Measurement storing hydrogen heat capacity readings.",
+    )
+    heat_group.add_argument(
+        "--heat-h2-cp-field",
+        default=os.getenv("HEAT_H2_CP_FIELD", "value"),
+        help="Field storing hydrogen heat capacity readings.",
+    )
+    heat_group.add_argument(
+        "--heat-thermostat-power-limit",
+        type=float,
+        default=_env_float("HEAT_THERMOSTAT_POWER_LIMIT"),
+        help="Thermostat maximum cooling/heating power (kJ/s).",
+    )
+    heat_group.add_argument(
+        "--heat-lhv",
+        type=float,
+        default=float(os.getenv("HEAT_LHV", "241.8")),
+        help="Lower heating value of hydrogen (kJ/mol).",
+    )
+    heat_group.add_argument(
+        "--heat-molar-mass-h2",
+        type=float,
+        default=float(os.getenv("HEAT_MOLAR_MASS_H2", "0.002016")),
+        help="Hydrogen molar mass (kg/mol).",
+    )
+    heat_group.add_argument(
+        "--heat-reactor-volume",
+        type=float,
+        default=float(os.getenv("HEAT_REACTOR_VOLUME", "0.01")),
+        help="Reactor volume (m^3).",
+    )
+    heat_group.add_argument(
+        "--heat-rate-measurement",
+        default=os.getenv("HEAT_RATE_MEASUREMENT", "heat_balance"),
+        help="Measurement name for heat balance outputs.",
+    )
+    heat_group.add_argument(
+        "--heat-energy-measurement",
+        default=os.getenv("HEAT_ENERGY_MEASUREMENT", "energy_efficiency"),
+        help="Measurement name for efficiency outputs.",
+    )
+    heat_group.add_argument(
+        "--heat-sty-measurement",
+        default=os.getenv("HEAT_STY_MEASUREMENT", "space_time_yield"),
+        help="Measurement name for space time yield outputs.",
+    )
+
     return parser.parse_args()
 
 
@@ -793,6 +1113,138 @@ def build_lohc_rate_config(args: argparse.Namespace) -> LohcRateConfig:
     )
 
 
+def build_heat_balance_config(args: argparse.Namespace) -> HeatBalanceConfig:
+    """Translate CLI args into the heat balance calculator config."""
+    if not args.token:
+        raise SystemExit("Provide an InfluxDB API token via --token, INFLUX_TOKEN, or NAS defaults.")
+    if not args.org:
+        raise SystemExit("Provide an InfluxDB organization via --org, INFLUX_ORG, or NAS defaults.")
+
+    hydrogenation_rate = _build_scalar_source(
+        "heat hydrogenation rate",
+        args.heat_hydrogenation_rate_bucket,
+        args.heat_hydrogenation_rate_measurement,
+        args.heat_hydrogenation_rate_field,
+        args.heat_hydrogenation_rate_value,
+        required_message=(
+            "Provide --heat-hydrogenation-rate-bucket/measurement/field or --heat-hydrogenation-rate-value."
+        ),
+    )
+    mixture_mass = _build_scalar_source(
+        "heat mixture mass",
+        args.heat_mixture_mass_bucket,
+        args.heat_mixture_mass_measurement,
+        args.heat_mixture_mass_field,
+        args.heat_mixture_mass_value,
+        required_message="Provide mixture mass inputs for heat balance calculations.",
+    )
+    mixture_cp = _build_scalar_source(
+        "heat mixture cp",
+        args.heat_mixture_cp_bucket,
+        args.heat_mixture_cp_measurement,
+        args.heat_mixture_cp_field,
+        args.heat_mixture_cp_value,
+        required_message="Provide mixture heat capacity inputs for heat balance calculations.",
+    )
+    reactor_temp = _build_scalar_source(
+        "heat reactor temp",
+        args.heat_reactor_temp_bucket,
+        args.heat_reactor_temp_measurement,
+        args.heat_reactor_temp_field,
+        args.heat_reactor_temp_value,
+        required_message="Provide current reactor temperature inputs for heat balance calculations.",
+    )
+    reactor_temp_prev = _build_scalar_source(
+        "heat reactor previous temp",
+        args.heat_reactor_prev_temp_bucket,
+        args.heat_reactor_prev_temp_measurement,
+        args.heat_reactor_prev_temp_field,
+        args.heat_reactor_prev_temp_value,
+        required_message="Provide previous reactor temperature inputs for heat balance calculations.",
+    )
+    jacket_temp = _build_scalar_source(
+        "heat jacket temp",
+        args.heat_jacket_temp_bucket,
+        args.heat_jacket_temp_measurement,
+        args.heat_jacket_temp_field,
+        args.heat_jacket_temp_value,
+        required_message="Provide thermostat temperature inputs for heat balance calculations.",
+    )
+    ambient_temp = _build_scalar_source(
+        "heat ambient temp",
+        args.heat_ambient_temp_bucket,
+        args.heat_ambient_temp_measurement,
+        args.heat_ambient_temp_field,
+        args.heat_ambient_temp_value,
+        required_message="Provide ambient temperature inputs for heat balance calculations.",
+    )
+    ua_coefficient = _build_scalar_source(
+        "heat UA coefficient",
+        args.heat_ua_bucket,
+        args.heat_ua_measurement,
+        args.heat_ua_field,
+        args.heat_ua_value,
+        required_message="Provide UA coefficient inputs for heat balance calculations.",
+    )
+    alpha_loss = _build_scalar_source(
+        "heat alpha loss",
+        args.heat_alpha_loss_bucket,
+        args.heat_alpha_loss_measurement,
+        args.heat_alpha_loss_field,
+        args.heat_alpha_loss_value,
+        required_message="Provide alpha loss inputs for heat balance calculations.",
+    )
+    agitator_power = _build_scalar_source(
+        "heat agitator power",
+        args.heat_agitator_power_bucket,
+        args.heat_agitator_power_measurement,
+        args.heat_agitator_power_field,
+        args.heat_agitator_power_value,
+        required_message="Provide agitator power inputs for heat balance calculations.",
+    )
+
+    hydrogen_mass = _build_optional_scalar_source(
+        "heat hydrogen mass",
+        args.heat_h2_mass_bucket,
+        args.heat_h2_mass_measurement,
+        args.heat_h2_mass_field,
+        args.heat_h2_mass_value,
+    )
+    hydrogen_cp = _build_optional_scalar_source(
+        "heat hydrogen cp",
+        args.heat_h2_cp_bucket,
+        args.heat_h2_cp_measurement,
+        args.heat_h2_cp_field,
+        args.heat_h2_cp_value,
+    )
+
+    return HeatBalanceConfig(
+        url=args.url,
+        token=args.token,
+        org=args.org,
+        tag_key=args.tag_key,
+        experience=args.experience,
+        range_window=args.range_window,
+        hydrogenation_rate=hydrogenation_rate,
+        storage_rate_multiplier=args.heat_storage_multiplier,
+        reaction_enthalpy_kj_per_mol=args.heat_reaction_enthalpy,
+        mixture_mass=mixture_mass,
+        mixture_heat_capacity=mixture_cp,
+        reactor_temp=reactor_temp,
+        reactor_temp_prev=reactor_temp_prev,
+        accumulation_interval_seconds=args.heat_accu_interval_seconds,
+        jacket_temp=jacket_temp,
+        ambient_temp=ambient_temp,
+        ua_coefficient=ua_coefficient,
+        alpha_loss=alpha_loss,
+        agitator_power=agitator_power,
+        hydrogen_heat_capacity=hydrogen_cp,
+        hydrogen_mass_dosed=hydrogen_mass,
+        thermostat_power_limit=args.heat_thermostat_power_limit,
+        lower_heating_value=args.heat_lhv,
+        molar_mass_h2_kg=args.heat_molar_mass_h2,
+        reactor_volume_m3=args.heat_reactor_volume,
+    )
 def build_faraday_result_target(args: argparse.Namespace) -> Optional[FaradayWriteTarget]:
     """Create the optional Influx destination for computed values."""
     if not args.write_results:
@@ -844,6 +1296,26 @@ def build_lohc_write_target(args: argparse.Namespace) -> Optional[LohcRateWriteT
         bucket=bucket,
         hydrogenation_measurement=args.lohc_rate_measurement,
         storage_measurement=args.lohc_h2_rate_measurement,
+        field=args.result_field,
+    )
+
+
+def build_heat_write_target(args: argparse.Namespace) -> Optional[HeatBalanceWriteTarget]:
+    """Create the optional Influx destination for heat balance values."""
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.heat_hydrogenation_rate_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or configure --heat-hydrogenation-rate-bucket/--current-bucket."
+        )
+
+    return HeatBalanceWriteTarget(
+        bucket=bucket,
+        heat_measurement=args.heat_rate_measurement,
+        energy_measurement=args.heat_energy_measurement,
+        sty_measurement=args.heat_sty_measurement,
         field=args.result_field,
     )
 
@@ -986,6 +1458,52 @@ def _emit_lohc_result(result: LohcRateResult, output: str) -> None:
     print(f"H2 storage rate: {result.hydrogen_storage_rate:.6f} mol/s")
 
 
+def _heat_result_to_dict(result: HeatBalanceResult) -> dict:
+    """Convert the heat balance result into a serializable dict."""
+    return {
+        "experience": result.experience,
+        "timestamp": result.timestamp.isoformat(),
+        "hydrogenation_rate_mol_s": result.hydrogenation_rate,
+        "hydrogen_storage_rate_mol_s": result.hydrogen_storage_rate,
+        "q_flow_kj_s": result.q_flow,
+        "q_accu_kj_s": result.q_accu,
+        "q_loss_kj_s": result.q_loss,
+        "q_dos_kj_s": result.q_dos,
+        "q_net_measured_kj_s": result.q_net_measured,
+        "q_net_theoretical_kj_s": result.q_net_theoretical,
+        "thermostat_limit_kj_s": result.thermostat_limit,
+        "q_net_minus_limit_kj_s": result.q_net_minus_limit,
+        "efficiency_ratio": result.efficiency,
+        "mass_rate_h2_kg_s": result.mass_rate_h2,
+        "sty_kg_m3_h": result.space_time_yield,
+    }
+
+
+def _emit_heat_result(result: HeatBalanceResult, output: str) -> None:
+    """Print heat balance output."""
+    if output == "json":
+        print(json.dumps(_heat_result_to_dict(result), indent=2))
+        return
+
+    print(f"Experience: {result.experience}")
+    print(f"Timestamp: {result.timestamp.isoformat()}")
+    print(f"Hydrogenation rate: {result.hydrogenation_rate:.6f} mol/s")
+    print(f"Hydrogen storage rate: {result.hydrogen_storage_rate:.6f} mol/s")
+    print(f"Q_flow: {result.q_flow:.3f} kJ/s")
+    print(f"Q_accu: {result.q_accu:.3f} kJ/s")
+    print(f"Q_loss: {result.q_loss:.3f} kJ/s")
+    print(f"Q_dos: {result.q_dos:.3f} kJ/s")
+    print(f"Q_net (measured): {result.q_net_measured:.3f} kJ/s")
+    print(f"Q_net (theoretical): {result.q_net_theoretical:.3f} kJ/s")
+    if result.thermostat_limit is not None:
+        print(f"Thermostat limit: {result.thermostat_limit:.3f} kJ/s")
+    if result.q_net_minus_limit is not None:
+        print(f"Q_net - limit: {result.q_net_minus_limit:.3f} kJ/s")
+    print(f"Efficiency: {result.efficiency * 100.0:.2f} %")
+    print(f"Mass rate H2: {result.mass_rate_h2:.6f} kg/s")
+    print(f"Space time yield: {result.space_time_yield:.3f} kg/m^3/h")
+
+
 def main() -> None:
     """Entrypoint that wires parsing, computation, optional writes, and output."""
     nas_defaults = resolve_defaults()
@@ -1035,25 +1553,47 @@ def main() -> None:
         _emit_doh_result(doh_result, args.output)
         return
 
-    lohc_config = build_lohc_rate_config(args)
-    lohc_target = build_lohc_write_target(args)
-    calculator = LohcRateCalculator(lohc_config)
+    if args.formula == "lohc_rate":
+        lohc_config = build_lohc_rate_config(args)
+        lohc_target = build_lohc_write_target(args)
+        calculator = LohcRateCalculator(lohc_config)
+        try:
+            lohc_result = calculator.compute()
+        except Exception as exc:  # pragma: no cover - CLI safeguard
+            logging.exception("LOHC rate computation failed: %s", exc)
+            calculator.close()
+            sys.exit(1)
+
+        if lohc_target:
+            try:
+                calculator.write_result(lohc_result, lohc_target)
+            except Exception as exc:  # pragma: no cover - write safeguard
+                logging.exception("Writing LOHC rate result failed: %s", exc)
+                calculator.close()
+                sys.exit(1)
+        calculator.close()
+        _emit_lohc_result(lohc_result, args.output)
+        return
+
+    heat_config = build_heat_balance_config(args)
+    heat_target = build_heat_write_target(args)
+    calculator = HeatBalanceCalculator(heat_config)
     try:
-        lohc_result = calculator.compute()
+        heat_result = calculator.compute()
     except Exception as exc:  # pragma: no cover - CLI safeguard
-        logging.exception("LOHC rate computation failed: %s", exc)
+        logging.exception("Heat balance computation failed: %s", exc)
         calculator.close()
         sys.exit(1)
 
-    if lohc_target:
+    if heat_target:
         try:
-            calculator.write_result(lohc_result, lohc_target)
+            calculator.write_result(heat_result, heat_target)
         except Exception as exc:  # pragma: no cover - write safeguard
-            logging.exception("Writing LOHC rate result failed: %s", exc)
+            logging.exception("Writing heat balance result failed: %s", exc)
             calculator.close()
             sys.exit(1)
     calculator.close()
-    _emit_lohc_result(lohc_result, args.output)
+    _emit_heat_result(heat_result, args.output)
 
 
 if __name__ == "__main__":
