@@ -17,9 +17,15 @@ from faraday_monitor import (
     MOLAR_VOLUME_NL,
     SignalSelection,
 )
-
-from doh_formula import DoHCalculator, DoHConfig, DoHResult, DoHWriteTarget, ScalarSource
+from formula_base import ScalarSource
+from doh_formula import DoHCalculator, DoHConfig, DoHResult, DoHWriteTarget
 from faraday_formula import FaradayCalculator, FaradayConfig, FaradayResult, FaradayWriteTarget
+from lohc_rate_formula import (
+    LohcRateCalculator,
+    LohcRateConfig,
+    LohcRateResult,
+    LohcRateWriteTarget,
+)
 from nas_config import NasInfluxDefaults, influx_cli_defaults, resolve_defaults
 
 
@@ -42,9 +48,9 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
     parser.add_argument("experience", help="Experience/sensor tag value to filter on (e.g. test2).")
     parser.add_argument(
         "--formula",
-        choices=("faraday", "doh"),
+        choices=("faraday", "doh", "lohc_rate"),
         default=os.getenv("H2_FORMULA", "faraday"),
-        help="Select which formula to run (faraday or doh). Default: faraday.",
+        help="Select which formula to run (faraday, doh, lohc_rate). Default: faraday.",
     )
     parser.add_argument(
         "--tag-key",
@@ -349,6 +355,192 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         help="Measurement name used when storing DoH ratios.",
     )
 
+    lohc_group = parser.add_argument_group(
+        "LOHC hydrogenation rate inputs",
+        "Arguments used when --formula lohc_rate is selected.",
+    )
+    lohc_group.add_argument(
+        "--lohc-doh-bucket",
+        default=os.getenv("LOHC_DOH_BUCKET"),
+        help="Bucket containing stored DoH ratios (0-1).",
+    )
+    lohc_group.add_argument(
+        "--lohc-doh-measurement",
+        default=os.getenv("LOHC_DOH_MEASUREMENT"),
+        help="Measurement storing DoH ratios.",
+    )
+    lohc_group.add_argument(
+        "--lohc-doh-field",
+        default=os.getenv("LOHC_DOH_FIELD", "value"),
+        help="Field storing DoH ratios.",
+    )
+    lohc_group.add_argument(
+        "--lohc-doh-value",
+        type=float,
+        default=_env_float("LOHC_DOH_VALUE"),
+        help="Fixed DoH ratio (0-1) instead of querying Influx.",
+    )
+    lohc_group.add_argument(
+        "--lohc-density-bucket",
+        default=os.getenv("LOHC_DENSITY_BUCKET"),
+        help="Bucket storing LOHC density readings (mass per liter).",
+    )
+    lohc_group.add_argument(
+        "--lohc-density-measurement",
+        default=os.getenv("LOHC_DENSITY_MEASUREMENT"),
+        help="Measurement storing LOHC density readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-density-field",
+        default=os.getenv("LOHC_DENSITY_FIELD", "value"),
+        help="Field storing LOHC density readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-density-value",
+        type=float,
+        default=_env_float("LOHC_DENSITY_VALUE"),
+        help="Fixed LOHC density (mass per liter).",
+    )
+    lohc_group.add_argument(
+        "--lohc-molar-mass",
+        type=float,
+        default=_env_float("LOHC_MOLAR_MASS"),
+        help="LOHC molar mass (mass per mol).",
+    )
+    lohc_group.add_argument(
+        "--lohc-ph2-bucket",
+        default=os.getenv("LOHC_PH2_BUCKET"),
+        help="Bucket storing partial pressure of H2 readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-ph2-measurement",
+        default=os.getenv("LOHC_PH2_MEASUREMENT"),
+        help="Measurement storing partial pressure of H2 data.",
+    )
+    lohc_group.add_argument(
+        "--lohc-ph2-field",
+        default=os.getenv("LOHC_PH2_FIELD", "value"),
+        help="Field storing partial pressure of H2.",
+    )
+    lohc_group.add_argument(
+        "--lohc-ph2-value",
+        type=float,
+        default=_env_float("LOHC_PH2_VALUE"),
+        help="Fixed partial pressure of H2 (matching Henry constant units).",
+    )
+    lohc_group.add_argument(
+        "--lohc-henry-bucket",
+        default=os.getenv("LOHC_HENRY_BUCKET"),
+        help="Bucket storing Henry's law constant readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-henry-measurement",
+        default=os.getenv("LOHC_HENRY_MEASUREMENT"),
+        help="Measurement storing Henry's law constant readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-henry-field",
+        default=os.getenv("LOHC_HENRY_FIELD", "value"),
+        help="Field storing Henry's law constant readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-henry-value",
+        type=float,
+        default=_env_float("LOHC_HENRY_VALUE"),
+        help="Fixed Henry's law constant (matching pressure units).",
+    )
+    lohc_group.add_argument(
+        "--lohc-vol-frac-bucket",
+        default=os.getenv("LOHC_VOL_FRAC_BUCKET"),
+        help="Bucket storing volumetric fraction of catalyst readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-vol-frac-measurement",
+        default=os.getenv("LOHC_VOL_FRAC_MEASUREMENT"),
+        help="Measurement storing volumetric fraction readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-vol-frac-field",
+        default=os.getenv("LOHC_VOL_FRAC_FIELD", "value"),
+        help="Field storing volumetric fraction readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-vol-frac-value",
+        type=float,
+        default=_env_float("LOHC_VOL_FRAC_VALUE"),
+        help="Fixed volumetric fraction of catalyst.",
+    )
+    lohc_group.add_argument(
+        "--lohc-temperature-bucket",
+        default=os.getenv("LOHC_TEMPERATURE_BUCKET"),
+        help="Bucket storing reactor temperature (K).",
+    )
+    lohc_group.add_argument(
+        "--lohc-temperature-measurement",
+        default=os.getenv("LOHC_TEMPERATURE_MEASUREMENT"),
+        help="Measurement storing temperature readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-temperature-field",
+        default=os.getenv("LOHC_TEMPERATURE_FIELD", "value"),
+        help="Field storing temperature readings.",
+    )
+    lohc_group.add_argument(
+        "--lohc-temperature-value",
+        type=float,
+        default=_env_float("LOHC_TEMPERATURE_VALUE"),
+        help="Fixed reactor temperature in Kelvin.",
+    )
+    lohc_group.add_argument(
+        "--lohc-k-bucket",
+        default=os.getenv("LOHC_K_BUCKET"),
+        help="Bucket storing kinetic constant values.",
+    )
+    lohc_group.add_argument(
+        "--lohc-k-measurement",
+        default=os.getenv("LOHC_K_MEASUREMENT"),
+        help="Measurement storing kinetic constant values.",
+    )
+    lohc_group.add_argument(
+        "--lohc-k-field",
+        default=os.getenv("LOHC_K_FIELD", "value"),
+        help="Field storing kinetic constant values.",
+    )
+    lohc_group.add_argument(
+        "--lohc-k-value",
+        type=float,
+        default=_env_float("LOHC_K_VALUE"),
+        help="Fixed kinetic constant (overrides Arrhenius inputs).",
+    )
+    lohc_group.add_argument(
+        "--lohc-k0",
+        type=float,
+        default=_env_float("LOHC_K0"),
+        help="Arrhenius pre-exponential factor K0 (used when --lohc-k-value not provided).",
+    )
+    lohc_group.add_argument(
+        "--lohc-activation-energy",
+        type=float,
+        default=_env_float("LOHC_ACTIVATION_ENERGY"),
+        help="Activation energy Ea in J/mol (used with --lohc-k0).",
+    )
+    lohc_group.add_argument(
+        "--lohc-gas-constant",
+        type=float,
+        default=float(os.getenv("LOHC_GAS_CONSTANT", "8.314462618")),
+        help="Gas constant for Arrhenius calculations (default: 8.314462618).",
+    )
+    lohc_group.add_argument(
+        "--lohc-rate-measurement",
+        default=os.getenv("LOHC_RATE_MEASUREMENT", "lohc_hydrogenation_rate"),
+        help="Measurement name for LOHC hydrogenation rate outputs.",
+    )
+    lohc_group.add_argument(
+        "--lohc-h2-rate-measurement",
+        default=os.getenv("LOHC_H2_RATE_MEASUREMENT", "lohc_h2_storage_rate"),
+        help="Measurement name for LOHC hydrogen storage rate outputs.",
+    )
+
     return parser.parse_args()
 
 
@@ -495,6 +687,112 @@ def build_doh_config(args: argparse.Namespace) -> DoHConfig:
     )
 
 
+def build_lohc_rate_config(args: argparse.Namespace) -> LohcRateConfig:
+    """Translate CLI args into the LOHC rate calculator config."""
+    if not args.token:
+        raise SystemExit("Provide an InfluxDB API token via --token, INFLUX_TOKEN, or NAS defaults.")
+    if not args.org:
+        raise SystemExit("Provide an InfluxDB organization via --org, INFLUX_ORG, or NAS defaults.")
+
+    doh_ratio = _build_scalar_source(
+        "lohc doh ratio",
+        args.lohc_doh_bucket,
+        args.lohc_doh_measurement,
+        args.lohc_doh_field,
+        args.lohc_doh_value,
+        required_message=(
+            "Provide --lohc-doh-bucket/measurement/field or --lohc-doh-value for LOHC rate calculations."
+        ),
+    )
+    density = _build_scalar_source(
+        "lohc density",
+        args.lohc_density_bucket,
+        args.lohc_density_measurement,
+        args.lohc_density_field,
+        args.lohc_density_value,
+        required_message=(
+            "Provide --lohc-density-bucket/measurement/field or --lohc-density-value for LOHC rate calculations."
+        ),
+    )
+    molar_mass = args.lohc_molar_mass
+    if molar_mass is None:
+        raise SystemExit("Provide --lohc-molar-mass (or LOHC_MOLAR_MASS env) for LOHC rate calculations.")
+
+    partial_pressure = _build_scalar_source(
+        "lohc partial pressure",
+        args.lohc_ph2_bucket,
+        args.lohc_ph2_measurement,
+        args.lohc_ph2_field,
+        args.lohc_ph2_value,
+        required_message=(
+            "Provide --lohc-ph2-bucket/measurement/field or --lohc-ph2-value for LOHC rate calculations."
+        ),
+    )
+    henry_constant = _build_scalar_source(
+        "lohc Henry constant",
+        args.lohc_henry_bucket,
+        args.lohc_henry_measurement,
+        args.lohc_henry_field,
+        args.lohc_henry_value,
+        required_message=(
+            "Provide --lohc-henry-bucket/measurement/field or --lohc-henry-value for LOHC rate calculations."
+        ),
+    )
+    volumetric_fraction = _build_scalar_source(
+        "lohc volumetric fraction",
+        args.lohc_vol_frac_bucket,
+        args.lohc_vol_frac_measurement,
+        args.lohc_vol_frac_field,
+        args.lohc_vol_frac_value,
+        required_message=(
+            "Provide --lohc-vol-frac-bucket/measurement/field or --lohc-vol-frac-value for LOHC rate calculations."
+        ),
+    )
+    temperature = _build_scalar_source(
+        "lohc temperature",
+        args.lohc_temperature_bucket,
+        args.lohc_temperature_measurement,
+        args.lohc_temperature_field,
+        args.lohc_temperature_value,
+        required_message=(
+            "Provide --lohc-temperature-bucket/measurement/field or --lohc-temperature-value for LOHC rate calculations."
+        ),
+    )
+
+    kinetic_constant = _build_optional_scalar_source(
+        "lohc kinetic constant",
+        args.lohc_k_bucket,
+        args.lohc_k_measurement,
+        args.lohc_k_field,
+        args.lohc_k_value,
+    )
+
+    if kinetic_constant is None and (args.lohc_k0 is None or args.lohc_activation_energy is None):
+        raise SystemExit(
+            "Provide --lohc-k inputs or both --lohc-k0 and --lohc-activation-energy for LOHC rate calculations."
+        )
+
+    return LohcRateConfig(
+        url=args.url,
+        token=args.token,
+        org=args.org,
+        tag_key=args.tag_key,
+        experience=args.experience,
+        range_window=args.range_window,
+        doh_ratio=doh_ratio,
+        lohc_density=density,
+        lohc_molar_mass=molar_mass,
+        partial_pressure=partial_pressure,
+        henry_constant=henry_constant,
+        volumetric_fraction=volumetric_fraction,
+        temperature=temperature,
+        gas_constant=args.lohc_gas_constant,
+        kinetic_constant=kinetic_constant,
+        pre_exponential=args.lohc_k0,
+        activation_energy=args.lohc_activation_energy,
+    )
+
+
 def build_faraday_result_target(args: argparse.Namespace) -> Optional[FaradayWriteTarget]:
     """Create the optional Influx destination for computed values."""
     if not args.write_results:
@@ -529,6 +827,25 @@ def build_doh_write_target(args: argparse.Namespace) -> Optional[DoHWriteTarget]
         raise SystemExit("Provide --doh-result-measurement when --write-results is enabled for DoH.")
 
     return DoHWriteTarget(bucket=bucket, measurement=measurement, field=args.result_field)
+
+
+def build_lohc_write_target(args: argparse.Namespace) -> Optional[LohcRateWriteTarget]:
+    """Create the optional Influx destination for LOHC rate values."""
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.lohc_doh_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or configure --lohc-doh-bucket/--current-bucket."
+        )
+
+    return LohcRateWriteTarget(
+        bucket=bucket,
+        hydrogenation_measurement=args.lohc_rate_measurement,
+        storage_measurement=args.lohc_h2_rate_measurement,
+        field=args.result_field,
+    )
 
 
 def _build_signal(name: str, bucket: Optional[str], measurement: Optional[str], field: Optional[str]) -> SignalSelection:
@@ -639,6 +956,36 @@ def _emit_doh_result(result: DoHResult, output: str) -> None:
     print(f"Net H2 volume: {result.net_hydrogen_volume_liters:.3f} L")
 
 
+def _lohc_result_to_dict(result: LohcRateResult) -> dict:
+    """Convert the LOHC rate result into a serializable dict."""
+    return {
+        "experience": result.experience,
+        "timestamp": result.timestamp.isoformat(),
+        "doh_ratio": result.doh_ratio,
+        "nmih_concentration": result.nmih_concentration,
+        "hydrogenated_concentration": result.hydrogenated_concentration,
+        "kinetic_constant": result.kinetic_constant,
+        "lohc_hydrogenation_rate": result.hydrogenation_rate,
+        "h2_storage_rate": result.hydrogen_storage_rate,
+    }
+
+
+def _emit_lohc_result(result: LohcRateResult, output: str) -> None:
+    """Print LOHC hydrogenation output."""
+    if output == "json":
+        print(json.dumps(_lohc_result_to_dict(result), indent=2))
+        return
+
+    print(f"Experience: {result.experience}")
+    print(f"Timestamp: {result.timestamp.isoformat()}")
+    print(f"DoH: {result.doh_ratio * 100.0:.3f} %")
+    print(f"[NMID]: {result.nmih_concentration:.6f} mol/L")
+    print(f"[8HNMID]: {result.hydrogenated_concentration:.6f} mol/L")
+    print(f"Kinetic constant: {result.kinetic_constant:.6e}")
+    print(f"Hydrogenation rate: {result.hydrogenation_rate:.6f} mol/(L·s)")
+    print(f"H2 storage rate: {result.hydrogen_storage_rate:.6f} mol/s")
+
+
 def main() -> None:
     """Entrypoint that wires parsing, computation, optional writes, and output."""
     nas_defaults = resolve_defaults()
@@ -666,26 +1013,47 @@ def main() -> None:
         _emit_faraday_result(result, args.output)
         return
 
-    # DoH branch
-    doh_config = build_doh_config(args)
-    doh_target = build_doh_write_target(args)
-    calculator = DoHCalculator(doh_config)
+    if args.formula == "doh":
+        doh_config = build_doh_config(args)
+        doh_target = build_doh_write_target(args)
+        calculator = DoHCalculator(doh_config)
+        try:
+            doh_result = calculator.compute()
+        except Exception as exc:  # pragma: no cover - CLI safeguard
+            logging.exception("DoH computation failed: %s", exc)
+            calculator.close()
+            sys.exit(1)
+
+        if doh_target:
+            try:
+                calculator.write_result(doh_result, doh_target)
+            except Exception as exc:  # pragma: no cover - write safeguard
+                logging.exception("Writing DoH result failed: %s", exc)
+                calculator.close()
+                sys.exit(1)
+        calculator.close()
+        _emit_doh_result(doh_result, args.output)
+        return
+
+    lohc_config = build_lohc_rate_config(args)
+    lohc_target = build_lohc_write_target(args)
+    calculator = LohcRateCalculator(lohc_config)
     try:
-        doh_result = calculator.compute()
+        lohc_result = calculator.compute()
     except Exception as exc:  # pragma: no cover - CLI safeguard
-        logging.exception("DoH computation failed: %s", exc)
+        logging.exception("LOHC rate computation failed: %s", exc)
         calculator.close()
         sys.exit(1)
 
-    if doh_target:
+    if lohc_target:
         try:
-            calculator.write_result(doh_result, doh_target)
+            calculator.write_result(lohc_result, lohc_target)
         except Exception as exc:  # pragma: no cover - write safeguard
-            logging.exception("Writing DoH result failed: %s", exc)
+            logging.exception("Writing LOHC rate result failed: %s", exc)
             calculator.close()
             sys.exit(1)
     calculator.close()
-    _emit_doh_result(doh_result, args.output)
+    _emit_lohc_result(lohc_result, args.output)
 
 
 if __name__ == "__main__":

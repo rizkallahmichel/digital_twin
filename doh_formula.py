@@ -9,16 +9,7 @@ from typing import List, Optional, Tuple
 from influxdb_client import Point, WritePrecision
 
 from faraday_monitor import SignalSelection
-from formula_base import BaseInfluxExperienceConfig, InfluxCalculatorBase, pick_timestamp
-
-
-@dataclass(frozen=True)
-class ScalarSource:
-    """Describes a scalar input that can be fetched or provided directly."""
-
-    name: str
-    signal: Optional[SignalSelection] = None
-    fixed_value: Optional[float] = None
+from formula_base import BaseInfluxExperienceConfig, InfluxCalculatorBase, ScalarSource, pick_timestamp
 
 
 @dataclass(frozen=True)

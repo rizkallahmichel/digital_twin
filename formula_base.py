@@ -39,6 +39,15 @@ class BaseInfluxExperienceConfig:
     range_window: str
 
 
+@dataclass(frozen=True)
+class ScalarSource:
+    """Describes a scalar input that can be fetched or provided directly."""
+
+    name: str
+    signal: Optional[SignalSelection] = None
+    fixed_value: Optional[float] = None
+
+
 class InfluxCalculatorBase:
     """Shared InfluxDB client and query helpers."""
 
@@ -105,6 +114,7 @@ def pick_timestamp(*candidates: Optional[datetime]) -> datetime:
 
 __all__ = [
     "BaseInfluxExperienceConfig",
+    "ScalarSource",
     "InfluxCalculatorBase",
     "flux_escape",
     "escape_identifier",
