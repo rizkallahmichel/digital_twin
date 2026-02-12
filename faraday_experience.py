@@ -28,6 +28,7 @@ from nas_config import NasInfluxDefaults, influx_cli_defaults, resolve_defaults
 
 
 def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
+    """Set up CLI flags and return parsed arguments."""
     cli_defaults = influx_cli_defaults(defaults)
     parser = argparse.ArgumentParser(
         description="Fetch the latest readings for an experience tag and compute Faraday-based hydrogen output.",
@@ -173,6 +174,7 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
 
 
 def configure_logging(level: str) -> None:
+    """Initialize a simple logger for CLI runs."""
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
@@ -180,6 +182,7 @@ def configure_logging(level: str) -> None:
 
 
 def build_config(args: argparse.Namespace) -> ExperienceConfig:
+    """Translate CLI args into the calculator config."""
     if not args.token:
         raise SystemExit("Provide an InfluxDB API token via --token, INFLUX_TOKEN, or NAS defaults.")
     if not args.org:
@@ -226,6 +229,7 @@ def build_config(args: argparse.Namespace) -> ExperienceConfig:
 
 
 def build_result_target(args: argparse.Namespace) -> Optional[ResultWriteTarget]:
+    """Create the optional Influx destination for computed values."""
     if not args.write_results:
         return None
 
@@ -244,6 +248,7 @@ def build_result_target(args: argparse.Namespace) -> Optional[ResultWriteTarget]
 
 
 def _build_signal(name: str, bucket: Optional[str], measurement: Optional[str], field: Optional[str]) -> SignalSelection:
+    """Validate bucket/measurement/field inputs and wrap them in a dataclass."""
     missing = [label for value, label in ((bucket, "bucket"), (measurement, "measurement"), (field, "field")) if not value]
     if missing:
         raise SystemExit(
@@ -254,6 +259,7 @@ def _build_signal(name: str, bucket: Optional[str], measurement: Optional[str], 
 
 
 def _result_to_dict(result: ExperienceResult) -> dict:
+    """Convert the result object into a serializable dict."""
     return {
         "experience": result.experience,
         "timestamp": result.timestamp.isoformat(),
@@ -266,6 +272,7 @@ def _result_to_dict(result: ExperienceResult) -> dict:
 
 
 def _emit_result(result: ExperienceResult, output: str) -> None:
+    """Print CLI output in text or JSON form."""
     if output == "json":
         print(json.dumps(_result_to_dict(result), indent=2))
         return
@@ -279,6 +286,7 @@ def _emit_result(result: ExperienceResult, output: str) -> None:
 
 
 def main() -> None:
+    """Entrypoint that wires parsing, computation, optional writes, and output."""
     nas_defaults = resolve_defaults()
     args = parse_args(nas_defaults)
     configure_logging(args.log_level)

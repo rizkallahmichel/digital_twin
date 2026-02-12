@@ -71,6 +71,7 @@ class ResultWriteTarget:
 class ExperienceCalculator:
     """Binds together the InfluxDB access and Faraday-law math for an experience."""
 
+    # Initialize the Influx client and reuse the query/write APIs.
     def __init__(self, config: ExperienceConfig) -> None:
         self.config = config
         self.client = InfluxDBClient(
@@ -83,9 +84,11 @@ class ExperienceCalculator:
         self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
         self._denominator = config.electrons_per_molecule * config.faraday_constant
 
+    # Clean up the underlying Influx client.
     def close(self) -> None:
         self.client.close()
 
+    # Pull latest readings, combine them with Faraday math, and return the derived snapshot.
     def compute(self) -> ExperienceResult:
         current_value, current_time = self._fetch_latest(self.config.current_signal)
         if current_value is None:
@@ -126,6 +129,7 @@ class ExperienceCalculator:
             volumetric_rate=volumetric_rate,
         )
 
+    # Push the molar and volumetric rate points into the configured bucket.
     def write_result(self, result: ExperienceResult, target: ResultWriteTarget) -> None:
         """Persist the derived molar/volumetric rates back to InfluxDB."""
 
@@ -142,6 +146,7 @@ class ExperienceCalculator:
 
         self.write_api.write(bucket=target.bucket, org=self.config.org, record=points)
 
+    # Run the Flux template for a signal and return the first point value/time.
     def _fetch_latest(self, signal: SignalSelection) -> Tuple[Optional[float], Optional[datetime]]:
         flux = self._build_query(signal)
         try:
@@ -161,6 +166,7 @@ class ExperienceCalculator:
                 return record.get_value(), record.get_time()
         return None, None
 
+    # Build the Flux query string with all filters in place.
     def _build_query(self, signal: SignalSelection) -> str:
         return FILTERED_LAST_TEMPLATE.substitute(
             bucket=signal.bucket,
