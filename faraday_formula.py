@@ -1,42 +1,21 @@
-"""Core Faraday experience data models and calculations."""
+"""Faraday-law based hydrogen production calculations."""
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from string import Template
-from typing import Optional, Tuple
+from datetime import datetime
+from typing import Optional
 
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.exceptions import InfluxDBError
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client import Point, WritePrecision
 
 from faraday_monitor import SignalSelection
-
-
-FILTERED_LAST_TEMPLATE = Template(
-    """
-from(bucket: "$bucket")
-  |> range(start: -$window)
-  |> filter(fn: (r) => r._measurement == "$measurement")
-  |> filter(fn: (r) => r._field == "$field")
-  |> filter(fn: (r) => r["$tag_key"] == "$tag_value")
-  |> last()
-"""
-)
+from formula_base import BaseInfluxExperienceConfig, InfluxCalculatorBase, pick_timestamp
 
 
 @dataclass(frozen=True)
-class ExperienceConfig:
-    """Fully validated configuration for a single experience request."""
+class FaradayConfig(BaseInfluxExperienceConfig):
+    """Configuration for Faraday-law computations."""
 
-    url: str
-    token: str
-    org: str
-    tag_key: str
-    experience: str
-    range_window: str
     current_signal: SignalSelection
     efficiency_signal: Optional[SignalSelection]
     efficiency_is_percent: bool
@@ -47,7 +26,7 @@ class ExperienceConfig:
 
 
 @dataclass(frozen=True)
-class ExperienceResult:
+class FaradayResult:
     """Snapshot of the derived Faraday outputs for a particular experience."""
 
     experience: str
@@ -59,7 +38,7 @@ class ExperienceResult:
 
 
 @dataclass(frozen=True)
-class ResultWriteTarget:
+class FaradayWriteTarget:
     """Describes where the derived rates should be stored in InfluxDB."""
 
     bucket: str
@@ -68,28 +47,16 @@ class ResultWriteTarget:
     field: str = "value"
 
 
-class ExperienceCalculator:
+class FaradayCalculator(InfluxCalculatorBase):
     """Binds together the InfluxDB access and Faraday-law math for an experience."""
 
-    # Initialize the Influx client and reuse the query/write APIs.
-    def __init__(self, config: ExperienceConfig) -> None:
+    def __init__(self, config: FaradayConfig) -> None:
+        super().__init__(config)
         self.config = config
-        self.client = InfluxDBClient(
-            url=config.url,
-            token=config.token,
-            org=config.org,
-            timeout=60000,
-        )
-        self.query_api = self.client.query_api()
-        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
         self._denominator = config.electrons_per_molecule * config.faraday_constant
 
-    # Clean up the underlying Influx client.
-    def close(self) -> None:
-        self.client.close()
-
     # Pull latest readings, combine them with Faraday math, and return the derived snapshot.
-    def compute(self) -> ExperienceResult:
+    def compute(self) -> FaradayResult:
         current_value, current_time = self._fetch_latest(self.config.current_signal)
         if current_value is None:
             raise RuntimeError(
@@ -118,9 +85,9 @@ class ExperienceCalculator:
             )
         molar_rate = (efficiency_ratio * current_value) / self._denominator
         volumetric_rate = molar_rate * self.config.molar_volume
-        timestamp = _pick_timestamp(current_time, efficiency_time)
+        timestamp = pick_timestamp(current_time, efficiency_time)
 
-        return ExperienceResult(
+        return FaradayResult(
             experience=self.config.experience,
             timestamp=timestamp,
             current=current_value,
@@ -130,7 +97,7 @@ class ExperienceCalculator:
         )
 
     # Push the molar and volumetric rate points into the configured bucket.
-    def write_result(self, result: ExperienceResult, target: ResultWriteTarget) -> None:
+    def write_result(self, result: FaradayResult, target: FaradayWriteTarget) -> None:
         """Persist the derived molar/volumetric rates back to InfluxDB."""
 
         points = [
@@ -146,50 +113,10 @@ class ExperienceCalculator:
 
         self.write_api.write(bucket=target.bucket, org=self.config.org, record=points)
 
-    # Run the Flux template for a signal and return the first point value/time.
-    def _fetch_latest(self, signal: SignalSelection) -> Tuple[Optional[float], Optional[datetime]]:
-        flux = self._build_query(signal)
-        try:
-            tables = self.query_api.query(org=self.config.org, query=flux)
-        except InfluxDBError as exc:
-            logging.error(
-                "Flux query failed for bucket=%s measurement=%s field=%s: %s",
-                signal.bucket,
-                signal.measurement,
-                signal.field,
-                exc,
-            )
-            return None, None
 
-        for table in tables:
-            for record in table.records:
-                return record.get_value(), record.get_time()
-        return None, None
-
-    # Build the Flux query string with all filters in place.
-    def _build_query(self, signal: SignalSelection) -> str:
-        return FILTERED_LAST_TEMPLATE.substitute(
-            bucket=signal.bucket,
-            window=self.config.range_window,
-            measurement=signal.measurement,
-            field=signal.field,
-            tag_key=_escape_identifier(self.config.tag_key),
-            tag_value=_flux_escape(self.config.experience),
-        )
-
-
-def _flux_escape(value: str) -> str:
-    """Escape user-provided strings so they remain valid Flux string literals."""
-
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _escape_identifier(value: str) -> str:
-    if '"' in value:
-        raise SystemExit("Tag keys containing double quotes are not supported.")
-    return value
-
-
-def _pick_timestamp(*candidates: Optional[datetime]) -> datetime:
-    timestamps = [dt for dt in candidates if dt is not None]
-    return max(timestamps) if timestamps else datetime.now(timezone.utc)
+__all__ = [
+    "FaradayCalculator",
+    "FaradayConfig",
+    "FaradayResult",
+    "FaradayWriteTarget",
+]
