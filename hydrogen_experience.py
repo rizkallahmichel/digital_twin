@@ -255,9 +255,15 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         help="Compute a single sample and exit (legacy behavior).",
     )
     parser.add_argument(
+        "--experience-status",
+        choices=("in_progress", "done"),
+        default=os.getenv("H2_EXPERIENCE_STATUS", "in_progress"),
+        help="Mark the experience as 'in_progress' (default) for live streaming or 'done' to replay once.",
+    )
+    parser.add_argument(
         "--experience-finished",
         action="store_true",
-        help="Replay stored data for a completed experience instead of live streaming.",
+        help="Legacy flag equivalent to --experience-status done (will be removed later).",
     )
     parser.add_argument(
         "--experience-start",
@@ -1724,7 +1730,8 @@ def main() -> None:
         config = build_faraday_config(args)
         result_target = build_faraday_result_target(args)
         calculator = FaradayCalculator(config)
-        if args.experience_finished:
+        experience_status = "done" if (args.experience_finished or args.experience_status == "done") else "in_progress"
+        if experience_status == "done":
             _replay_faraday_experience(calculator, result_target, _emit_faraday_result, args)
         else:
             _stream_results(calculator, result_target, _emit_faraday_result, args, "Faraday")
