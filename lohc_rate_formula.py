@@ -156,7 +156,7 @@ class LohcRateCalculator(InfluxCalculatorBase):
         if step_seconds <= 0:
             raise RuntimeError("Sampling interval must be greater than zero seconds.")
 
-        doh_ratio = self._timeline_for_scalar(self.config.doh_ratio, start, stop, required=True, allow_constant=False)
+        doh_ratio = self._timeline_for_scalar(self.config.doh_ratio, start, stop, required=True, allow_constant=True)
         density = self._timeline_for_scalar(self.config.lohc_density, start, stop, required=True, allow_constant=True)
         partial_pressure = self._timeline_for_scalar(
             self.config.partial_pressure, start, stop, required=True, allow_constant=True
