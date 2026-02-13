@@ -1650,6 +1650,64 @@ def _replay_doh_experience(
         calculator.close()
 
 
+def _replay_lohc_experience(
+    calculator: LohcRateCalculator,
+    target: Optional[LohcRateWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored LOHC hydrogenation data and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No LOHC data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        logging.info(
+            "Replayed %s LOHC samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("LOHC replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
 def _run_single_sample(calculator, target, emit_fn, args: argparse.Namespace, formula_label: str) -> None:
     """Compute one sample for the specified calculator and exit."""
 
@@ -1868,7 +1926,10 @@ def main() -> None:
         lohc_config = build_lohc_rate_config(args)
         lohc_target = build_lohc_write_target(args)
         calculator = LohcRateCalculator(lohc_config)
-        _run_single_sample(calculator, lohc_target, _emit_lohc_result, args, "LOHC rate")
+        if experience_status == "done":
+            _replay_lohc_experience(calculator, lohc_target, _emit_lohc_result, args)
+        else:
+            _run_single_sample(calculator, lohc_target, _emit_lohc_result, args, "LOHC rate")
         return
 
     heat_config = build_heat_balance_config(args)
