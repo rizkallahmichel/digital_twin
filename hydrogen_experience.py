@@ -1592,26 +1592,21 @@ def _replay_faraday_experience(
         calculator.close()
 
 
-def _run_faraday_single_sample(
-    calculator: FaradayCalculator,
-    target: Optional[FaradayWriteTarget],
-    emit_fn,
-    args: argparse.Namespace,
-) -> None:
-    """Compute one Faraday sample from provided inputs and exit."""
+def _run_single_sample(calculator, target, emit_fn, args: argparse.Namespace, formula_label: str) -> None:
+    """Compute one sample for the specified calculator and exit."""
 
     try:
         result = calculator.compute()
-    except Exception as exc:
-        logging.exception("Faraday computation failed: %s", exc)
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("%s computation failed: %s", formula_label, exc)
         calculator.close()
         sys.exit(1)
 
     if target:
         try:
             calculator.write_result(result, target)
-        except Exception as exc:
-            logging.exception("Writing Faraday result failed: %s", exc)
+        except Exception as exc:  # pragma: no cover - write safeguard
+            logging.exception("Writing %s result failed: %s", formula_label, exc)
             calculator.close()
             sys.exit(1)
 
@@ -1797,27 +1792,27 @@ def main() -> None:
         if experience_status == "done":
             _replay_faraday_experience(calculator, result_target, _emit_faraday_result, args)
         else:
-            _run_faraday_single_sample(calculator, result_target, _emit_faraday_result, args)
+            _run_single_sample(calculator, result_target, _emit_faraday_result, args, "Faraday")
         return
 
     if args.formula == "doh":
         doh_config = build_doh_config(args)
         doh_target = build_doh_write_target(args)
         calculator = DoHCalculator(doh_config)
-        _stream_results(calculator, doh_target, _emit_doh_result, args, "DoH")
+        _run_single_sample(calculator, doh_target, _emit_doh_result, args, "DoH")
         return
 
     if args.formula == "lohc_rate":
         lohc_config = build_lohc_rate_config(args)
         lohc_target = build_lohc_write_target(args)
         calculator = LohcRateCalculator(lohc_config)
-        _stream_results(calculator, lohc_target, _emit_lohc_result, args, "LOHC rate")
+        _run_single_sample(calculator, lohc_target, _emit_lohc_result, args, "LOHC rate")
         return
 
     heat_config = build_heat_balance_config(args)
     heat_target = build_heat_write_target(args)
     calculator = HeatBalanceCalculator(heat_config)
-    _stream_results(calculator, heat_target, _emit_heat_result, args, "Heat balance")
+    _run_single_sample(calculator, heat_target, _emit_heat_result, args, "Heat balance")
 
 
 if __name__ == "__main__":
