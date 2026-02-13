@@ -133,6 +133,16 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         default=os.getenv("H2_CURRENT_FIELD", "value"),
         help="Field that stores the current values.",
     )
+    parser.add_argument(
+        "--current-value",
+        type=float,
+        default=_env_float("H2_CURRENT_VALUE"),
+        help="Direct current reading (A) supplied by LabVIEW; skips querying Influx when provided.",
+    )
+    parser.add_argument(
+        "--sample-timestamp",
+        help="ISO-8601 timestamp for the provided readings; defaults to now when omitted.",
+    )
 
     parser.add_argument(
         "--efficiency-bucket",
@@ -963,12 +973,14 @@ def build_faraday_config(args: argparse.Namespace) -> FaradayConfig:
     if not args.org:
         raise SystemExit("Provide an InfluxDB organization via --org, INFLUX_ORG, or NAS defaults.")
 
-    current_signal = _build_signal(
-        "current",
-        args.current_bucket,
-        args.current_measurement,
-        args.current_field,
-    )
+    current_signal: Optional[SignalSelection] = None
+    if args.current_value is None:
+        current_signal = _build_signal(
+            "current",
+            args.current_bucket,
+            args.current_measurement,
+            args.current_field,
+        )
     efficiency_signal: Optional[SignalSelection] = None
     efficiency_fixed_ratio: Optional[float] = None
 
@@ -1000,6 +1012,8 @@ def build_faraday_config(args: argparse.Namespace) -> FaradayConfig:
         faraday_constant=args.faraday_constant,
         electrons_per_molecule=args.electrons_per_molecule,
         molar_volume=args.molar_volume,
+        current_value=args.current_value,
+        sample_timestamp=_parse_timestamp_arg("--sample-timestamp", args.sample_timestamp),
     )
 
 
@@ -1578,60 +1592,31 @@ def _replay_faraday_experience(
         calculator.close()
 
 
-def _follow_faraday_experience(
+def _run_faraday_single_sample(
     calculator: FaradayCalculator,
     target: Optional[FaradayWriteTarget],
     emit_fn,
     args: argparse.Namespace,
 ) -> None:
-    """Continuously compute Faraday samples from the beginning through live data."""
-
-    if args.sample_interval <= 0:
-        raise SystemExit("--sample-interval must be positive for Faraday streaming.")
-
-    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
-    step_delta = timedelta(seconds=args.sample_interval)
-    window_delta = _parse_range_window("--range-window", args.range_window)
-    next_timestamp = start_override or datetime.now(timezone.utc) - window_delta
+    """Compute one Faraday sample from provided inputs and exit."""
 
     try:
-        while True:
-            now = datetime.now(timezone.utc)
-            generator, actual_start, actual_end = calculator.iter_experience(
-                next_timestamp,
-                now,
-                args.sample_interval,
-            )
-            emitted = False
-            last_timestamp: Optional[datetime] = None
-            for result in generator:
-                emitted = True
-                last_timestamp = result.timestamp
-                if target:
-                    try:
-                        calculator.write_result(result, target)
-                    except Exception as exc:  # pragma: no cover - write safeguard
-                        logging.exception("Writing Faraday result failed: %s", exc)
-                        calculator.close()
-                        sys.exit(1)
-                emit_fn(result, args.output, streaming=True)
-
-            if emitted and last_timestamp is not None:
-                next_timestamp = last_timestamp + step_delta
-            else:
-                if actual_end is not None and actual_end >= next_timestamp:
-                    next_timestamp = actual_end + step_delta
-                elif actual_start is not None and next_timestamp < actual_start:
-                    next_timestamp = actual_start
-
-            try:
-                time.sleep(args.sample_interval)
-            except KeyboardInterrupt:
-                raise
-    except KeyboardInterrupt:
-        logging.info("Stopping Faraday tracking due to user interrupt.")
-    finally:
+        result = calculator.compute()
+    except Exception as exc:
+        logging.exception("Faraday computation failed: %s", exc)
         calculator.close()
+        sys.exit(1)
+
+    if target:
+        try:
+            calculator.write_result(result, target)
+        except Exception as exc:
+            logging.exception("Writing Faraday result failed: %s", exc)
+            calculator.close()
+            sys.exit(1)
+
+    emit_fn(result, args.output, streaming=False)
+    calculator.close()
 
 
 def _faraday_result_to_dict(result: FaradayResult) -> dict:
@@ -1812,7 +1797,7 @@ def main() -> None:
         if experience_status == "done":
             _replay_faraday_experience(calculator, result_target, _emit_faraday_result, args)
         else:
-            _follow_faraday_experience(calculator, result_target, _emit_faraday_result, args)
+            _run_faraday_single_sample(calculator, result_target, _emit_faraday_result, args)
         return
 
     if args.formula == "doh":

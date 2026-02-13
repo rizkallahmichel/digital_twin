@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple
 
 from influxdb_client import Point, WritePrecision
@@ -16,13 +16,15 @@ from formula_base import BaseInfluxExperienceConfig, InfluxCalculatorBase, pick_
 class FaradayConfig(BaseInfluxExperienceConfig):
     """Configuration for Faraday-law computations."""
 
-    current_signal: SignalSelection
+    current_signal: Optional[SignalSelection]
     efficiency_signal: Optional[SignalSelection]
     efficiency_is_percent: bool
     efficiency_fixed_ratio: Optional[float]
     faraday_constant: float
     electrons_per_molecule: float
     molar_volume: float
+    current_value: Optional[float] = None
+    sample_timestamp: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -57,12 +59,18 @@ class FaradayCalculator(InfluxCalculatorBase):
 
     # Pull latest readings, combine them with Faraday math, and return the derived snapshot.
     def compute(self) -> FaradayResult:
-        current_value, current_time = self._fetch_latest(self.config.current_signal)
-        if current_value is None:
-            raise RuntimeError(
-                f"No current reading found for experience '{self.config.experience}' in "
-                f"bucket '{self.config.current_signal.bucket}'."
-            )
+        if self.config.current_value is not None:
+            current_value = self.config.current_value
+            current_time = self.config.sample_timestamp or datetime.now(timezone.utc)
+        else:
+            if self.config.current_signal is None:
+                raise RuntimeError("Current signal is not configured for Faraday calculation.")
+            current_value, current_time = self._fetch_latest(self.config.current_signal)
+            if current_value is None:
+                raise RuntimeError(
+                    f"No current reading found for experience '{self.config.experience}' in "
+                    f"bucket '{self.config.current_signal.bucket}'."
+                )
 
         efficiency_value: Optional[float] = None
         efficiency_time: Optional[datetime] = None
@@ -96,6 +104,8 @@ class FaradayCalculator(InfluxCalculatorBase):
 
         if step_seconds <= 0:
             raise RuntimeError("Sampling interval must be greater than zero seconds.")
+        if self.config.current_signal is None:
+            raise RuntimeError("Current signal must be configured when replaying an experience.")
 
         current_series = self._fetch_series(self.config.current_signal, start, stop)
         if not current_series:
