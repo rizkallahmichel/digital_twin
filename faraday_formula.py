@@ -91,7 +91,7 @@ class FaradayCalculator(InfluxCalculatorBase):
         start: datetime,
         stop: datetime,
         step_seconds: float,
-    ) -> Tuple[Iterable[FaradayResult], datetime, datetime]:
+    ) -> Tuple[Iterable[FaradayResult], Optional[datetime], Optional[datetime]]:
         """Yield Faraday results across the requested window at fixed intervals."""
 
         if step_seconds <= 0:
@@ -99,15 +99,12 @@ class FaradayCalculator(InfluxCalculatorBase):
 
         current_series = self._fetch_series(self.config.current_signal, start, stop)
         if not current_series:
-            raise RuntimeError(
-                f"No current readings found for experience '{self.config.experience}' between "
-                f"{start.isoformat()} and {stop.isoformat()}."
-            )
+            return iter(()), None, None
 
         actual_start = max(start, current_series[0][0])
         actual_end = min(stop, current_series[-1][0])
         if actual_end < actual_start:
-            raise RuntimeError("No overlapping current data within the requested time window.")
+            return iter(()), actual_start, actual_end
 
         efficiency_series: Optional[List[Tuple[datetime, float]]] = None
         if self.config.efficiency_fixed_ratio is None:
@@ -117,10 +114,7 @@ class FaradayCalculator(InfluxCalculatorBase):
                 )
             efficiency_series = self._fetch_series(self.config.efficiency_signal, start, stop)
             if not efficiency_series:
-                raise RuntimeError(
-                    f"No efficiency readings found for experience '{self.config.experience}' "
-                    f"between {start.isoformat()} and {stop.isoformat()}."
-                )
+                return iter(()), actual_start, actual_end
 
         def _advance_index(series: List[Tuple[datetime, float]], idx: int, ts: datetime) -> int:
             while idx + 1 < len(series) and series[idx + 1][0] <= ts:

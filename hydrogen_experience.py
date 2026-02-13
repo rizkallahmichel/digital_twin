@@ -1536,6 +1536,14 @@ def _replay_faraday_experience(
             query_end,
             args.sample_interval,
         )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No Faraday data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
         sample_count = 0
         for result in generator:
             if target:
@@ -1552,6 +1560,62 @@ def _replay_faraday_experience(
     except Exception as exc:  # pragma: no cover - CLI safeguard
         logging.exception("Faraday replay failed: %s", exc)
         sys.exit(1)
+    finally:
+        calculator.close()
+
+
+def _follow_faraday_experience(
+    calculator: FaradayCalculator,
+    target: Optional[FaradayWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Continuously compute Faraday samples from the beginning through live data."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive for Faraday streaming.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    step_delta = timedelta(seconds=args.sample_interval)
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    next_timestamp = start_override or datetime.now(timezone.utc) - window_delta
+
+    try:
+        while True:
+            now = datetime.now(timezone.utc)
+            generator, actual_start, actual_end = calculator.iter_experience(
+                next_timestamp,
+                now,
+                args.sample_interval,
+            )
+            emitted = False
+            last_timestamp: Optional[datetime] = None
+            for result in generator:
+                emitted = True
+                last_timestamp = result.timestamp
+                if target:
+                    try:
+                        calculator.write_result(result, target)
+                    except Exception as exc:  # pragma: no cover - write safeguard
+                        logging.exception("Writing Faraday result failed: %s", exc)
+                        calculator.close()
+                        sys.exit(1)
+                emit_fn(result, args.output, streaming=True)
+
+            if emitted and last_timestamp is not None:
+                next_timestamp = last_timestamp + step_delta
+            else:
+                if actual_end is not None and actual_end >= next_timestamp:
+                    next_timestamp = actual_end + step_delta
+                elif actual_start is not None and next_timestamp < actual_start:
+                    next_timestamp = actual_start
+
+            try:
+                time.sleep(args.sample_interval)
+            except KeyboardInterrupt:
+                raise
+    except KeyboardInterrupt:
+        logging.info("Stopping Faraday tracking due to user interrupt.")
     finally:
         calculator.close()
 
@@ -1734,7 +1798,7 @@ def main() -> None:
         if experience_status == "done":
             _replay_faraday_experience(calculator, result_target, _emit_faraday_result, args)
         else:
-            _stream_results(calculator, result_target, _emit_faraday_result, args, "Faraday")
+            _follow_faraday_experience(calculator, result_target, _emit_faraday_result, args)
         return
 
     if args.formula == "doh":
