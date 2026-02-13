@@ -1545,11 +1545,19 @@ def _replay_faraday_experience(
             )
             return
         sample_count = 0
+        batch_points = []
+        batch_size = 500  # two points per sample, so 500 ~= 1000 points per write
         for result in generator:
             if target:
-                calculator.write_result(result, target)
+                batch_points.extend(calculator._result_points(result, target))
+                if len(batch_points) >= batch_size:
+                    calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
+                    batch_points.clear()
             emit_fn(result, args.output, streaming=True)
             sample_count += 1
+
+        if target and batch_points:
+            calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
         logging.info(
             "Replayed %s Faraday samples for experience '%s' between %s and %s.",
             sample_count,

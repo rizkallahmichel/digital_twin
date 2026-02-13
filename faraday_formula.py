@@ -150,17 +150,7 @@ class FaradayCalculator(InfluxCalculatorBase):
     def write_result(self, result: FaradayResult, target: FaradayWriteTarget) -> None:
         """Persist the derived molar/volumetric rates back to InfluxDB."""
 
-        points = [
-            Point(target.molar_measurement)
-            .tag(self.config.tag_key, self.config.experience)
-            .field(target.field, result.molar_rate)
-            .time(result.timestamp, WritePrecision.NS),
-            Point(target.volumetric_measurement)
-            .tag(self.config.tag_key, self.config.experience)
-            .field(target.field, result.volumetric_rate)
-            .time(result.timestamp, WritePrecision.NS),
-        ]
-
+        points = self._result_points(result, target)
         self.write_api.write(bucket=target.bucket, org=self.config.org, record=points)
 
     def _build_result(self, timestamp: datetime, current_value: float, efficiency_ratio: float) -> FaradayResult:
@@ -174,6 +164,18 @@ class FaradayCalculator(InfluxCalculatorBase):
             molar_rate=molar_rate,
             volumetric_rate=volumetric_rate,
         )
+
+    def _result_points(self, result: FaradayResult, target: FaradayWriteTarget):
+        return [
+            Point(target.molar_measurement)
+            .tag(self.config.tag_key, self.config.experience)
+            .field(target.field, result.molar_rate)
+            .time(result.timestamp, WritePrecision.NS),
+            Point(target.volumetric_measurement)
+            .tag(self.config.tag_key, self.config.experience)
+            .field(target.field, result.volumetric_rate)
+            .time(result.timestamp, WritePrecision.NS),
+        ]
 
 
 __all__ = [
