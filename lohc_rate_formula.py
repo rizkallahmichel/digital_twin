@@ -105,16 +105,7 @@ class LohcRateCalculator(InfluxCalculatorBase):
     def write_result(self, result: LohcRateResult, target: LohcRateWriteTarget) -> None:
         """Persist LOHC hydrogenation and storage rates to InfluxDB."""
 
-        points = [
-            Point(target.hydrogenation_measurement)
-            .tag(self.config.tag_key, self.config.experience)
-            .field(target.field, result.hydrogenation_rate)
-            .time(result.timestamp, WritePrecision.NS),
-            Point(target.storage_measurement)
-            .tag(self.config.tag_key, self.config.experience)
-            .field(target.field, result.hydrogen_storage_rate)
-            .time(result.timestamp, WritePrecision.NS),
-        ]
+        points = self._result_points(result, target)
         self.write_api.write(bucket=target.bucket, org=self.config.org, record=points)
 
     def _resolve_kinetic_constant(self, temperature_k: float) -> Tuple[float, Optional[datetime]]:
@@ -286,6 +277,18 @@ class LohcRateCalculator(InfluxCalculatorBase):
                 f"({source.signal.measurement}/{source.signal.field}) between {start} and {stop}."
             )
         return _ScalarTimeline(label=source.name, series=series)
+
+    def _result_points(self, result: LohcRateResult, target: LohcRateWriteTarget):
+        return [
+            Point(target.hydrogenation_measurement)
+            .tag(self.config.tag_key, self.config.experience)
+            .field(target.field, result.hydrogenation_rate)
+            .time(result.timestamp, WritePrecision.NS),
+            Point(target.storage_measurement)
+            .tag(self.config.tag_key, self.config.experience)
+            .field(target.field, result.hydrogen_storage_rate)
+            .time(result.timestamp, WritePrecision.NS),
+        ]
 
 
 class _ScalarTimeline:

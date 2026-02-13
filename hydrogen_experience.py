@@ -1687,12 +1687,20 @@ def _replay_lohc_experience(
             return
 
         sample_count = 0
+        batch_points = []
+        batch_size = 500
         for result in generator:
             if target:
-                calculator.write_result(result, target)
+                batch_points.extend(calculator._result_points(result, target))
+                if len(batch_points) >= batch_size:
+                    calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
+                    batch_points.clear()
             if args.replay_emit:
                 emit_fn(result, args.output, streaming=True)
             sample_count += 1
+
+        if target and batch_points:
+            calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
 
         logging.info(
             "Replayed %s LOHC samples for experience '%s' between %s and %s.",
