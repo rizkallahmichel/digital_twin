@@ -161,9 +161,9 @@ class DoHCalculator(InfluxCalculatorBase):
 
         start_candidates = [ts for ts in (_t.first_timestamp for _t in timelines) if ts is not None]
         end_candidates = [ts for ts in (_t.last_timestamp for _t in timelines) if ts is not None]
-        actual_start = max([start] + start_candidates) if start_candidates else None
-        actual_end = min([stop] + end_candidates) if end_candidates else None
-        if actual_start is None or actual_end is None or actual_end < actual_start:
+        actual_start = max([start] + start_candidates) if start_candidates else start
+        actual_end = min([stop] + end_candidates) if end_candidates else stop
+        if actual_end < actual_start:
             return iter(()), actual_start, actual_end
 
         step = timedelta(seconds=step_seconds)
