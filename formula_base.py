@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from string import Template
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from influxdb_client import InfluxDBClient
 from influxdb_client.client.exceptions import InfluxDBError
@@ -94,6 +94,31 @@ class InfluxCalculatorBase:
             tag_value=flux_escape(self.config.experience),
         )
 
+    def _fetch_series(
+        self,
+        signal: SignalSelection,
+        start: datetime,
+        stop: datetime,
+    ) -> List[Tuple[datetime, float]]:
+        flux = _build_range_query(
+            bucket=signal.bucket,
+            measurement=signal.measurement,
+            field=signal.field,
+            tag_key=escape_identifier(self.config.tag_key),
+            tag_value=flux_escape(self.config.experience),
+            start=_format_timestamp(start),
+            stop=_format_timestamp(stop),
+        )
+        tables = self.query_api.query(org=self.config.org, query=flux)
+        series: List[Tuple[datetime, float]] = []
+        for table in tables:
+            for record in table.records:
+                value = record.get_value()
+                if value is None:
+                    continue
+                series.append((record.get_time(), value))
+        return series
+
 
 def flux_escape(value: str) -> str:
     """Escape user-provided strings so they remain valid Flux string literals."""
@@ -110,6 +135,31 @@ def escape_identifier(value: str) -> str:
 def pick_timestamp(*candidates: Optional[datetime]) -> datetime:
     timestamps = [dt for dt in candidates if dt is not None]
     return max(timestamps) if timestamps else datetime.now(timezone.utc)
+
+
+def _format_timestamp(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _build_range_query(
+    bucket: str,
+    measurement: str,
+    field: str,
+    tag_key: str,
+    tag_value: str,
+    start: str,
+    stop: str,
+) -> str:
+    return f"""
+from(bucket: "{bucket}")
+  |> range(start: {start}, stop: {stop})
+  |> filter(fn: (r) => r._measurement == "{measurement}")
+  |> filter(fn: (r) => r._field == "{field}")
+  |> filter(fn: (r) => r["{tag_key}"] == "{tag_value}")
+  |> sort(columns: ["_time"])
+"""
 
 
 __all__ = [
