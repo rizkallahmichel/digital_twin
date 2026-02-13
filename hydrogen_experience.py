@@ -273,6 +273,11 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         "--experience-end",
         help="ISO-8601 timestamp marking the desired end of the experience window (UTC assumed when omitted).",
     )
+    parser.add_argument(
+        "--replay-emit",
+        action="store_true",
+        help="When --experience-status done, also emit each replayed sample to stdout (default: only write to Influx).",
+    )
 
     doh_group = parser.add_argument_group(
         "Degree of Hydrogenation inputs",
@@ -1553,7 +1558,8 @@ def _replay_faraday_experience(
                 if len(batch_points) >= batch_size:
                     calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
                     batch_points.clear()
-            emit_fn(result, args.output, streaming=True)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
             sample_count += 1
 
         if target and batch_points:
