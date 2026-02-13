@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Iterable, List, Optional, Tuple
 
 from influxdb_client import Point, WritePrecision
 
@@ -83,18 +83,74 @@ class FaradayCalculator(InfluxCalculatorBase):
             efficiency_ratio = (
                 efficiency_value / 100.0 if self.config.efficiency_is_percent else efficiency_value
             )
-        molar_rate = (efficiency_ratio * current_value) / self._denominator
-        volumetric_rate = molar_rate * self.config.molar_volume
         timestamp = pick_timestamp(current_time, efficiency_time)
+        return self._build_result(timestamp, current_value, efficiency_ratio)
 
-        return FaradayResult(
-            experience=self.config.experience,
-            timestamp=timestamp,
-            current=current_value,
-            efficiency_ratio=efficiency_ratio,
-            molar_rate=molar_rate,
-            volumetric_rate=volumetric_rate,
-        )
+    def iter_experience(
+        self,
+        start: datetime,
+        stop: datetime,
+        step_seconds: float,
+    ) -> Tuple[Iterable[FaradayResult], datetime, datetime]:
+        """Yield Faraday results across the requested window at fixed intervals."""
+
+        if step_seconds <= 0:
+            raise RuntimeError("Sampling interval must be greater than zero seconds.")
+
+        current_series = self._fetch_series(self.config.current_signal, start, stop)
+        if not current_series:
+            raise RuntimeError(
+                f"No current readings found for experience '{self.config.experience}' between "
+                f"{start.isoformat()} and {stop.isoformat()}."
+            )
+
+        actual_start = max(start, current_series[0][0])
+        actual_end = min(stop, current_series[-1][0])
+        if actual_end < actual_start:
+            raise RuntimeError("No overlapping current data within the requested time window.")
+
+        efficiency_series: Optional[List[Tuple[datetime, float]]] = None
+        if self.config.efficiency_fixed_ratio is None:
+            if self.config.efficiency_signal is None:
+                raise RuntimeError(
+                    "Efficiency signal must be configured when no fixed ratio is provided."
+                )
+            efficiency_series = self._fetch_series(self.config.efficiency_signal, start, stop)
+            if not efficiency_series:
+                raise RuntimeError(
+                    f"No efficiency readings found for experience '{self.config.experience}' "
+                    f"between {start.isoformat()} and {stop.isoformat()}."
+                )
+
+        def _advance_index(series: List[Tuple[datetime, float]], idx: int, ts: datetime) -> int:
+            while idx + 1 < len(series) and series[idx + 1][0] <= ts:
+                idx += 1
+            return idx
+
+        def _generator() -> Iterable[FaradayResult]:
+            current_idx = 0
+            efficiency_idx = 0
+            step = timedelta(seconds=step_seconds)
+            ts = actual_start
+            while ts <= actual_end:
+                current_idx = _advance_index(current_series, current_idx, ts)
+                current_value = current_series[current_idx][1]
+
+                if efficiency_series is not None:
+                    efficiency_idx = _advance_index(efficiency_series, efficiency_idx, ts)
+                    efficiency_value = efficiency_series[efficiency_idx][1]
+                    efficiency_ratio = (
+                        efficiency_value / 100.0 if self.config.efficiency_is_percent else efficiency_value
+                    )
+                else:
+                    if self.config.efficiency_fixed_ratio is None:
+                        raise RuntimeError("Efficiency ratio is undefined.")
+                    efficiency_ratio = self.config.efficiency_fixed_ratio
+
+                yield self._build_result(ts, current_value, efficiency_ratio)
+                ts += step
+
+        return _generator(), actual_start, actual_end
 
     # Push the molar and volumetric rate points into the configured bucket.
     def write_result(self, result: FaradayResult, target: FaradayWriteTarget) -> None:
@@ -112,6 +168,18 @@ class FaradayCalculator(InfluxCalculatorBase):
         ]
 
         self.write_api.write(bucket=target.bucket, org=self.config.org, record=points)
+
+    def _build_result(self, timestamp: datetime, current_value: float, efficiency_ratio: float) -> FaradayResult:
+        molar_rate = (efficiency_ratio * current_value) / self._denominator
+        volumetric_rate = molar_rate * self.config.molar_volume
+        return FaradayResult(
+            experience=self.config.experience,
+            timestamp=timestamp,
+            current=current_value,
+            efficiency_ratio=efficiency_ratio,
+            molar_rate=molar_rate,
+            volumetric_rate=volumetric_rate,
+        )
 
 
 __all__ = [

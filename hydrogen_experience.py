@@ -7,9 +7,10 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from faraday_monitor import (
@@ -37,6 +38,9 @@ from heat_balance_formula import (
 from nas_config import NasInfluxDefaults, influx_cli_defaults, resolve_defaults
 
 
+WINDOW_PATTERN = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
+
+
 def _env_float(name: str, default: Optional[float] = None) -> Optional[float]:
     value = os.getenv(name)
     if value is None:
@@ -45,6 +49,43 @@ def _env_float(name: str, default: Optional[float] = None) -> Optional[float]:
         return float(value)
     except ValueError as exc:
         raise SystemExit(f"Environment variable {name} must be a float; received {value!r}.") from exc
+
+
+def _parse_timestamp_arg(label: str, value: Optional[str]) -> Optional[datetime]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise SystemExit(
+            f"{label} must be an ISO-8601 timestamp such as 2026-02-12T14:52:00Z (received {value!r})."
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_range_window(label: str, window: str) -> timedelta:
+    match = WINDOW_PATTERN.match(window or "")
+    if not match:
+        raise SystemExit(f"{label} must follow the '<value><unit>' format (e.g. 30d, 12h, 15m).")
+    value = int(match.group(1))
+    unit = match.group(2).lower()
+    if value <= 0:
+        raise SystemExit(f"{label} must be greater than zero.")
+    multiplier = {
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+        "d": 86400,
+        "w": 604800,
+    }[unit]
+    return timedelta(seconds=value * multiplier)
 
 
 def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
@@ -212,6 +253,19 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         "--single-shot",
         action="store_true",
         help="Compute a single sample and exit (legacy behavior).",
+    )
+    parser.add_argument(
+        "--experience-finished",
+        action="store_true",
+        help="Replay stored data for a completed experience instead of live streaming.",
+    )
+    parser.add_argument(
+        "--experience-start",
+        help="ISO-8601 timestamp marking the desired start of the experience window (UTC assumed when omitted).",
+    )
+    parser.add_argument(
+        "--experience-end",
+        help="ISO-8601 timestamp marking the desired end of the experience window (UTC assumed when omitted).",
     )
 
     doh_group = parser.add_argument_group(
@@ -1450,6 +1504,52 @@ def _stream_results(
         calculator.close()
 
 
+def _replay_faraday_experience(
+    calculator: FaradayCalculator,
+    target: Optional[FaradayWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored Faraday data across the experience window and exit."""
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+        logging.info(
+            "Replayed %s Faraday samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("Faraday replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
 def _faraday_result_to_dict(result: FaradayResult) -> dict:
     """Convert the result object into a serializable dict."""
     return {
@@ -1624,7 +1724,10 @@ def main() -> None:
         config = build_faraday_config(args)
         result_target = build_faraday_result_target(args)
         calculator = FaradayCalculator(config)
-        _stream_results(calculator, result_target, _emit_faraday_result, args, "Faraday")
+        if args.experience_finished:
+            _replay_faraday_experience(calculator, result_target, _emit_faraday_result, args)
+        else:
+            _stream_results(calculator, result_target, _emit_faraday_result, args, "Faraday")
         return
 
     if args.formula == "doh":
