@@ -1592,6 +1592,64 @@ def _replay_faraday_experience(
         calculator.close()
 
 
+def _replay_doh_experience(
+    calculator: DoHCalculator,
+    target: Optional[DoHWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored DoH data across the experience window and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No DoH data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        logging.info(
+            "Replayed %s DoH samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("DoH replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
 def _run_single_sample(calculator, target, emit_fn, args: argparse.Namespace, formula_label: str) -> None:
     """Compute one sample for the specified calculator and exit."""
 
@@ -1784,11 +1842,12 @@ def main() -> None:
     nas_defaults = resolve_defaults()
     args = parse_args(nas_defaults)
     configure_logging(args.log_level)
+    experience_status = "done" if (args.experience_finished or args.experience_status == "done") else "in_progress"
+
     if args.formula == "faraday":
         config = build_faraday_config(args)
         result_target = build_faraday_result_target(args)
         calculator = FaradayCalculator(config)
-        experience_status = "done" if (args.experience_finished or args.experience_status == "done") else "in_progress"
         if experience_status == "done":
             _replay_faraday_experience(calculator, result_target, _emit_faraday_result, args)
         else:
@@ -1799,7 +1858,10 @@ def main() -> None:
         doh_config = build_doh_config(args)
         doh_target = build_doh_write_target(args)
         calculator = DoHCalculator(doh_config)
-        _run_single_sample(calculator, doh_target, _emit_doh_result, args, "DoH")
+        if experience_status == "done":
+            _replay_doh_experience(calculator, doh_target, _emit_doh_result, args)
+        else:
+            _run_single_sample(calculator, doh_target, _emit_doh_result, args, "DoH")
         return
 
     if args.formula == "lohc_rate":
