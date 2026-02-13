@@ -132,7 +132,7 @@ class DoHCalculator(InfluxCalculatorBase):
             raise RuntimeError("Sampling interval must be greater than zero seconds.")
 
         hydrogen_volume = self._timeline_for_scalar(
-            self.config.hydrogen_volume, start, stop, required=True, allow_constant=False
+            self.config.hydrogen_volume, start, stop, required=True, allow_constant=True
         )
         pressure = self._timeline_for_scalar(self.config.pressure, start, stop, required=True, allow_constant=True)
         temperature = self._timeline_for_scalar(
