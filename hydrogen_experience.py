@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from faraday_monitor import (
@@ -193,6 +195,23 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         choices=("text", "json"),
         default=os.getenv("H2_EXPERIENCE_OUTPUT", "text"),
         help="Output format for the computed result.",
+    )
+    parser.add_argument(
+        "--sample-interval",
+        type=float,
+        default=float(os.getenv("H2_SAMPLE_INTERVAL", "0.5")),
+        help="Seconds between samples when streaming continuously (default: 0.5).",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=int(os.getenv("H2_MAX_SAMPLES", "0")),
+        help="Stop after this many samples when > 0; otherwise run until interrupted.",
+    )
+    parser.add_argument(
+        "--single-shot",
+        action="store_true",
+        help="Compute a single sample and exit (legacy behavior).",
     )
 
     doh_group = parser.add_argument_group(
@@ -1373,6 +1392,64 @@ def _maybe_build_signal(
     return _build_signal(name, bucket, measurement, field)
 
 
+def _stream_results(
+    calculator,
+    target,
+    emit_fn,
+    args: argparse.Namespace,
+    formula_label: str,
+) -> None:
+    """Continuously compute and optionally write/emit results."""
+    interval = args.sample_interval
+    if args.single_shot:
+        max_samples: Optional[int] = 1
+    else:
+        max_samples = args.max_samples if args.max_samples and args.max_samples > 0 else None
+    streaming = not args.single_shot and (max_samples is None or max_samples > 1)
+
+    if streaming and interval <= 0:
+        raise SystemExit("--sample-interval must be positive when streaming continuously.")
+
+    sample_count = 0
+    try:
+        while True:
+            try:
+                result = calculator.compute()
+            except Exception as exc:  # pragma: no cover - CLI safeguard
+                logging.exception("%s computation failed: %s", formula_label, exc)
+                calculator.close()
+                sys.exit(1)
+
+            if streaming and hasattr(result, "timestamp"):
+                try:
+                    result.timestamp = datetime.now(timezone.utc)
+                except Exception:
+                    pass
+
+            if target:
+                try:
+                    calculator.write_result(result, target)
+                except Exception as exc:  # pragma: no cover - write safeguard
+                    logging.exception("Writing %s result failed: %s", formula_label, exc)
+                    calculator.close()
+                    sys.exit(1)
+
+            emit_fn(result, args.output, streaming=streaming)
+
+            sample_count += 1
+            if not streaming or (max_samples is not None and sample_count >= max_samples):
+                break
+
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                raise
+    except KeyboardInterrupt:
+        logging.info("Stopping %s sampling loop due to user interrupt.", formula_label)
+    finally:
+        calculator.close()
+
+
 def _faraday_result_to_dict(result: FaradayResult) -> dict:
     """Convert the result object into a serializable dict."""
     return {
@@ -1400,32 +1477,48 @@ def _doh_result_to_dict(result: DoHResult) -> dict:
     }
 
 
-def _emit_faraday_result(result: FaradayResult, output: str) -> None:
+def _emit_faraday_result(result: FaradayResult, output: str, streaming: bool = False) -> None:
     """Print CLI output in text or JSON form."""
     if output == "json":
-        print(json.dumps(_faraday_result_to_dict(result), indent=2))
+        payload = (
+            json.dumps(_faraday_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_faraday_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
         return
 
-    print(f"Experience: {result.experience}")
-    print(f"Timestamp: {result.timestamp.isoformat()}")
-    print(f"Current: {result.current:.3f} A")
-    print(f"Efficiency: {result.efficiency_ratio * 100.0:.2f} %")
-    print(f"Molar rate: {result.molar_rate:.6f} mol/s")
-    print(f"Volumetric rate: {result.volumetric_rate:.6f} NL/s")
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"Current: {result.current:.3f} A",
+        f"Efficiency: {result.efficiency_ratio * 100.0:.2f} %",
+        f"Molar rate: {result.molar_rate:.6f} mol/s",
+        f"Volumetric rate: {result.volumetric_rate:.6f} NL/s",
+    ]
+    print("\n".join(lines), flush=True)
 
 
-def _emit_doh_result(result: DoHResult, output: str) -> None:
+def _emit_doh_result(result: DoHResult, output: str, streaming: bool = False) -> None:
     """Print DoH output in text or JSON form."""
     if output == "json":
-        print(json.dumps(_doh_result_to_dict(result), indent=2))
+        payload = (
+            json.dumps(_doh_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_doh_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
         return
 
-    print(f"Experience: {result.experience}")
-    print(f"Timestamp: {result.timestamp.isoformat()}")
-    print(f"DoH: {result.doh_ratio * 100.0:.3f} %")
-    print(f"Stored H2: {result.stored_h2_moles:.6f} mol")
-    print(f"Max H2: {result.max_h2_moles:.6f} mol")
-    print(f"Net H2 volume: {result.net_hydrogen_volume_liters:.3f} L")
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"DoH: {result.doh_ratio * 100.0:.3f} %",
+        f"Stored H2: {result.stored_h2_moles:.6f} mol",
+        f"Max H2: {result.max_h2_moles:.6f} mol",
+        f"Net H2 volume: {result.net_hydrogen_volume_liters:.3f} L",
+    ]
+    print("\n".join(lines), flush=True)
 
 
 def _lohc_result_to_dict(result: LohcRateResult) -> dict:
@@ -1442,20 +1535,28 @@ def _lohc_result_to_dict(result: LohcRateResult) -> dict:
     }
 
 
-def _emit_lohc_result(result: LohcRateResult, output: str) -> None:
+def _emit_lohc_result(result: LohcRateResult, output: str, streaming: bool = False) -> None:
     """Print LOHC hydrogenation output."""
     if output == "json":
-        print(json.dumps(_lohc_result_to_dict(result), indent=2))
+        payload = (
+            json.dumps(_lohc_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_lohc_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
         return
 
-    print(f"Experience: {result.experience}")
-    print(f"Timestamp: {result.timestamp.isoformat()}")
-    print(f"DoH: {result.doh_ratio * 100.0:.3f} %")
-    print(f"[NMID]: {result.nmih_concentration:.6f} mol/L")
-    print(f"[8HNMID]: {result.hydrogenated_concentration:.6f} mol/L")
-    print(f"Kinetic constant: {result.kinetic_constant:.6e}")
-    print(f"Hydrogenation rate: {result.hydrogenation_rate:.6f} mol/(L·s)")
-    print(f"H2 storage rate: {result.hydrogen_storage_rate:.6f} mol/s")
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"DoH: {result.doh_ratio * 100.0:.3f} %",
+        f"[NMID]: {result.nmih_concentration:.6f} mol/L",
+        f"[8HNMID]: {result.hydrogenated_concentration:.6f} mol/L",
+        f"Kinetic constant: {result.kinetic_constant:.6e}",
+        f"Hydrogenation rate: {result.hydrogenation_rate:.6f} mol/(L*s)",
+        f"H2 storage rate: {result.hydrogen_storage_rate:.6f} mol/s",
+    ]
+    print("\n".join(lines), flush=True)
 
 
 def _heat_result_to_dict(result: HeatBalanceResult) -> dict:
@@ -1479,29 +1580,39 @@ def _heat_result_to_dict(result: HeatBalanceResult) -> dict:
     }
 
 
-def _emit_heat_result(result: HeatBalanceResult, output: str) -> None:
+def _emit_heat_result(result: HeatBalanceResult, output: str, streaming: bool = False) -> None:
     """Print heat balance output."""
     if output == "json":
-        print(json.dumps(_heat_result_to_dict(result), indent=2))
+        payload = (
+            json.dumps(_heat_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_heat_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
         return
 
-    print(f"Experience: {result.experience}")
-    print(f"Timestamp: {result.timestamp.isoformat()}")
-    print(f"Hydrogenation rate: {result.hydrogenation_rate:.6f} mol/s")
-    print(f"Hydrogen storage rate: {result.hydrogen_storage_rate:.6f} mol/s")
-    print(f"Q_flow: {result.q_flow:.3f} kJ/s")
-    print(f"Q_accu: {result.q_accu:.3f} kJ/s")
-    print(f"Q_loss: {result.q_loss:.3f} kJ/s")
-    print(f"Q_dos: {result.q_dos:.3f} kJ/s")
-    print(f"Q_net (measured): {result.q_net_measured:.3f} kJ/s")
-    print(f"Q_net (theoretical): {result.q_net_theoretical:.3f} kJ/s")
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"Hydrogenation rate: {result.hydrogenation_rate:.6f} mol/s",
+        f"Hydrogen storage rate: {result.hydrogen_storage_rate:.6f} mol/s",
+        f"Q_flow: {result.q_flow:.3f} kJ/s",
+        f"Q_accu: {result.q_accu:.3f} kJ/s",
+        f"Q_loss: {result.q_loss:.3f} kJ/s",
+        f"Q_dos: {result.q_dos:.3f} kJ/s",
+        f"Q_net (measured): {result.q_net_measured:.3f} kJ/s",
+        f"Q_net (theoretical): {result.q_net_theoretical:.3f} kJ/s",
+    ]
     if result.thermostat_limit is not None:
-        print(f"Thermostat limit: {result.thermostat_limit:.3f} kJ/s")
+        lines.append(f"Thermostat limit: {result.thermostat_limit:.3f} kJ/s")
     if result.q_net_minus_limit is not None:
-        print(f"Q_net - limit: {result.q_net_minus_limit:.3f} kJ/s")
-    print(f"Efficiency: {result.efficiency * 100.0:.2f} %")
-    print(f"Mass rate H2: {result.mass_rate_h2:.6f} kg/s")
-    print(f"Space time yield: {result.space_time_yield:.3f} kg/m^3/h")
+        lines.append(f"Q_net - limit: {result.q_net_minus_limit:.3f} kJ/s")
+    lines.extend([
+        f"Efficiency: {result.efficiency * 100.0:.2f} %",
+        f"Mass rate H2: {result.mass_rate_h2:.6f} kg/s",
+        f"Space time yield: {result.space_time_yield:.3f} kg/m^3/h",
+    ])
+    print("\n".join(lines), flush=True)
 
 
 def main() -> None:
@@ -1513,87 +1624,27 @@ def main() -> None:
         config = build_faraday_config(args)
         result_target = build_faraday_result_target(args)
         calculator = FaradayCalculator(config)
-        try:
-            result = calculator.compute()
-        except Exception as exc:  # pragma: no cover - CLI safeguard
-            logging.exception("Experience computation failed: %s", exc)
-            calculator.close()
-            sys.exit(1)
-
-        if result_target:
-            try:
-                calculator.write_result(result, result_target)
-            except Exception as exc:  # pragma: no cover - write safeguard
-                logging.exception("Writing computed result failed: %s", exc)
-                calculator.close()
-                sys.exit(1)
-        calculator.close()
-        _emit_faraday_result(result, args.output)
+        _stream_results(calculator, result_target, _emit_faraday_result, args, "Faraday")
         return
 
     if args.formula == "doh":
         doh_config = build_doh_config(args)
         doh_target = build_doh_write_target(args)
         calculator = DoHCalculator(doh_config)
-        try:
-            doh_result = calculator.compute()
-        except Exception as exc:  # pragma: no cover - CLI safeguard
-            logging.exception("DoH computation failed: %s", exc)
-            calculator.close()
-            sys.exit(1)
-
-        if doh_target:
-            try:
-                calculator.write_result(doh_result, doh_target)
-            except Exception as exc:  # pragma: no cover - write safeguard
-                logging.exception("Writing DoH result failed: %s", exc)
-                calculator.close()
-                sys.exit(1)
-        calculator.close()
-        _emit_doh_result(doh_result, args.output)
+        _stream_results(calculator, doh_target, _emit_doh_result, args, "DoH")
         return
 
     if args.formula == "lohc_rate":
         lohc_config = build_lohc_rate_config(args)
         lohc_target = build_lohc_write_target(args)
         calculator = LohcRateCalculator(lohc_config)
-        try:
-            lohc_result = calculator.compute()
-        except Exception as exc:  # pragma: no cover - CLI safeguard
-            logging.exception("LOHC rate computation failed: %s", exc)
-            calculator.close()
-            sys.exit(1)
-
-        if lohc_target:
-            try:
-                calculator.write_result(lohc_result, lohc_target)
-            except Exception as exc:  # pragma: no cover - write safeguard
-                logging.exception("Writing LOHC rate result failed: %s", exc)
-                calculator.close()
-                sys.exit(1)
-        calculator.close()
-        _emit_lohc_result(lohc_result, args.output)
+        _stream_results(calculator, lohc_target, _emit_lohc_result, args, "LOHC rate")
         return
 
     heat_config = build_heat_balance_config(args)
     heat_target = build_heat_write_target(args)
     calculator = HeatBalanceCalculator(heat_config)
-    try:
-        heat_result = calculator.compute()
-    except Exception as exc:  # pragma: no cover - CLI safeguard
-        logging.exception("Heat balance computation failed: %s", exc)
-        calculator.close()
-        sys.exit(1)
-
-    if heat_target:
-        try:
-            calculator.write_result(heat_result, heat_target)
-        except Exception as exc:  # pragma: no cover - write safeguard
-            logging.exception("Writing heat balance result failed: %s", exc)
-            calculator.close()
-            sys.exit(1)
-    calculator.close()
-    _emit_heat_result(heat_result, args.output)
+    _stream_results(calculator, heat_target, _emit_heat_result, args, "Heat balance")
 
 
 if __name__ == "__main__":
