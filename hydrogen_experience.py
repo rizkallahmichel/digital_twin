@@ -1716,6 +1716,72 @@ def _replay_lohc_experience(
         calculator.close()
 
 
+def _replay_heat_experience(
+    calculator: HeatBalanceCalculator,
+    target: Optional[HeatBalanceWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored heat balance data across the experience window and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No heat balance data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        batch_points = []
+        batch_size = 300  # ~900 points per write since each sample creates 3 points
+        for result in generator:
+            if target:
+                batch_points.extend(calculator._result_points(result, target))
+                if len(batch_points) >= batch_size:
+                    calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
+                    batch_points.clear()
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        if target and batch_points:
+            calculator.write_api.write(bucket=target.bucket, org=calculator.config.org, record=batch_points)
+
+        logging.info(
+            "Replayed %s heat balance samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("Heat balance replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
 def _run_single_sample(calculator, target, emit_fn, args: argparse.Namespace, formula_label: str) -> None:
     """Compute one sample for the specified calculator and exit."""
 
@@ -1943,7 +2009,10 @@ def main() -> None:
     heat_config = build_heat_balance_config(args)
     heat_target = build_heat_write_target(args)
     calculator = HeatBalanceCalculator(heat_config)
-    _run_single_sample(calculator, heat_target, _emit_heat_result, args, "Heat balance")
+    if experience_status == "done":
+        _replay_heat_experience(calculator, heat_target, _emit_heat_result, args)
+    else:
+        _run_single_sample(calculator, heat_target, _emit_heat_result, args, "Heat balance")
 
 
 if __name__ == "__main__":
