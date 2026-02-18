@@ -22,6 +22,7 @@ from faraday_monitor import (
 )
 from formula_base import ScalarSource
 from doh_formula import DoHCalculator, DoHConfig, DoHResult, DoHWriteTarget
+from dod_formula import DoDCalculator, DoDConfig, DoDResult, DoDWriteTarget
 from faraday_formula import FaradayCalculator, FaradayConfig, FaradayResult, FaradayWriteTarget
 from lohc_rate_formula import (
     LohcRateCalculator,
@@ -35,6 +36,9 @@ from heat_balance_formula import (
     HeatBalanceResult,
     HeatBalanceWriteTarget,
 )
+from cost_formula import CostCalculator, CostConfig, CostResult, CostWriteTarget
+from alpha_loss_formula import AlphaLossCalculator, AlphaLossConfig, AlphaLossResult, AlphaLossWriteTarget
+from fuel_cell_formula import FuelCellCalculator, FuelCellConfig, FuelCellResult, FuelCellWriteTarget
 from nas_config import NasInfluxDefaults, influx_cli_defaults, resolve_defaults
 
 
@@ -97,7 +101,7 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
     parser.add_argument("experience", help="Experience/sensor tag value to filter on (e.g. test2).")
     parser.add_argument(
         "--formula",
-        choices=("faraday", "doh", "lohc_rate", "heat_balance"),
+        choices=("faraday", "doh", "dod", "lohc_rate", "heat_balance", "alpha_loss", "fuel_cell", "cost"),
         default=os.getenv("H2_FORMULA", "faraday"),
         help="Select which formula to run (faraday, doh, lohc_rate, heat_balance). Default: faraday.",
     )
@@ -110,11 +114,6 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         "--url",
         default=cli_defaults["url"],
         help=f"InfluxDB URL (default: {cli_defaults['url']}).",
-    )
-    parser.add_argument(
-        "--token",
-        default=cli_defaults["token"],
-        help="InfluxDB API token (defaults to INFLUX_TOKEN or NAS credential fallback).",
     )
     parser.add_argument(
         "--org",
@@ -453,6 +452,166 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         "--doh-result-measurement",
         default=os.getenv("DOH_RESULT_MEASUREMENT", "doh_ratio"),
         help="Measurement name used when storing DoH ratios.",
+    )
+
+    dod_group = parser.add_argument_group(
+        "Degree of Dehydrogenation inputs",
+        "Arguments used when --formula dod is selected.",
+    )
+    dod_group.add_argument(
+        "--dod-h2-volume-bucket",
+        default=os.getenv("DOD_H2_VOLUME_BUCKET"),
+        help="Bucket with cumulative released hydrogen volume (liters).",
+    )
+    dod_group.add_argument(
+        "--dod-h2-volume-measurement",
+        default=os.getenv("DOD_H2_VOLUME_MEASUREMENT"),
+        help="Measurement for released hydrogen volume readings.",
+    )
+    dod_group.add_argument(
+        "--dod-h2-volume-field",
+        default=os.getenv("DOD_H2_VOLUME_FIELD", "value"),
+        help="Field storing released hydrogen volume readings.",
+    )
+    dod_group.add_argument(
+        "--dod-h2-volume-value",
+        type=float,
+        default=_env_float("DOD_H2_VOLUME_VALUE"),
+        help="Fixed released hydrogen volume in liters.",
+    )
+    dod_group.add_argument(
+        "--dod-pressure-bucket",
+        default=os.getenv("DOD_PRESSURE_BUCKET"),
+        help="Bucket storing dehydrogenation pressure data (Pa).",
+    )
+    dod_group.add_argument(
+        "--dod-pressure-measurement",
+        default=os.getenv("DOD_PRESSURE_MEASUREMENT"),
+        help="Measurement storing dehydrogenation pressure data.",
+    )
+    dod_group.add_argument(
+        "--dod-pressure-field",
+        default=os.getenv("DOD_PRESSURE_FIELD", "value"),
+        help="Field storing dehydrogenation pressure values.",
+    )
+    dod_group.add_argument(
+        "--dod-pressure-value",
+        type=float,
+        default=_env_float("DOD_PRESSURE_VALUE"),
+        help="Fixed dehydrogenation pressure in Pascals.",
+    )
+    dod_group.add_argument(
+        "--dod-temperature-bucket",
+        default=os.getenv("DOD_TEMPERATURE_BUCKET"),
+        help="Bucket storing dehydrogenation temperature data (Kelvin).",
+    )
+    dod_group.add_argument(
+        "--dod-temperature-measurement",
+        default=os.getenv("DOD_TEMPERATURE_MEASUREMENT"),
+        help="Measurement storing dehydrogenation temperature data.",
+    )
+    dod_group.add_argument(
+        "--dod-temperature-field",
+        default=os.getenv("DOD_TEMPERATURE_FIELD", "value"),
+        help="Field storing dehydrogenation temperature readings.",
+    )
+    dod_group.add_argument(
+        "--dod-temperature-value",
+        type=float,
+        default=_env_float("DOD_TEMPERATURE_VALUE"),
+        help="Fixed temperature in Kelvin for DoD calculations.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-mass-bucket",
+        default=os.getenv("DOD_LOHC_MASS_BUCKET"),
+        help="Bucket storing LOHC mass readings for dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-mass-measurement",
+        default=os.getenv("DOD_LOHC_MASS_MEASUREMENT"),
+        help="Measurement storing LOHC mass readings for dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-mass-field",
+        default=os.getenv("DOD_LOHC_MASS_FIELD", "value"),
+        help="Field storing LOHC mass readings for dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-mass-value",
+        type=float,
+        default=_env_float("DOD_LOHC_MASS_VALUE"),
+        help="Fixed LOHC mass for dehydrogenation calculations.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-volume-bucket",
+        default=os.getenv("DOD_LOHC_VOLUME_BUCKET"),
+        help="Bucket storing LOHC volume readings during dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-volume-measurement",
+        default=os.getenv("DOD_LOHC_VOLUME_MEASUREMENT"),
+        help="Measurement storing LOHC volume readings during dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-volume-field",
+        default=os.getenv("DOD_LOHC_VOLUME_FIELD", "value"),
+        help="Field storing LOHC volume readings during dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-volume-value",
+        type=float,
+        default=_env_float("DOD_LOHC_VOLUME_VALUE"),
+        help="Fixed LOHC volume (liters) for dehydrogenation calculations.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-density-bucket",
+        default=os.getenv("DOD_LOHC_DENSITY_BUCKET"),
+        help="Bucket storing LOHC density readings during dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-density-measurement",
+        default=os.getenv("DOD_LOHC_DENSITY_MEASUREMENT"),
+        help="Measurement storing LOHC density readings during dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-density-field",
+        default=os.getenv("DOD_LOHC_DENSITY_FIELD", "value"),
+        help="Field storing LOHC density readings during dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-density-value",
+        type=float,
+        default=_env_float("DOD_LOHC_DENSITY_VALUE"),
+        help="Fixed LOHC density (mass per liter).",
+    )
+    dod_group.add_argument(
+        "--dod-lohc-molar-mass",
+        type=float,
+        default=_env_float("DOD_LOHC_MOLAR_MASS"),
+        help="LOHC molar mass for dehydrogenation (e.g., kg/mol).",
+    )
+    dod_group.add_argument(
+        "--dod-gas-constant",
+        type=float,
+        default=float(os.getenv("DOD_GAS_CONSTANT", "8.314462618")),
+        help="Gas constant R in J/(mol*K). Default: 8.314462618.",
+    )
+    dod_group.add_argument(
+        "--dod-reactor-volume-liters",
+        type=float,
+        default=float(os.getenv("DOD_REACTOR_VOLUME_LITERS", "10.0")),
+        help="Total reactor volume (liters) for dehydrogenation.",
+    )
+    dod_group.add_argument(
+        "--dod-volume-to-m3-factor",
+        type=float,
+        default=float(os.getenv("DOD_VOLUME_TO_M3_FACTOR", "0.001")),
+        help="Conversion factor from liters to cubic meters (default: 0.001).",
+    )
+    dod_group.add_argument(
+        "--dod-result-measurement",
+        default=os.getenv("DOD_RESULT_MEASUREMENT", "dod_ratio"),
+        help="Measurement name used when storing DoD ratios.",
     )
 
     lohc_group = parser.add_argument_group(
@@ -955,7 +1114,347 @@ def parse_args(defaults: NasInfluxDefaults) -> argparse.Namespace:
         help="Measurement name for space time yield outputs.",
     )
 
-    return parser.parse_args()
+    alpha_group = parser.add_argument_group(
+        "Alpha loss inputs",
+        "Arguments for --formula alpha_loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-loss-value",
+        type=float,
+        default=_env_float("ALPHA_LOSS_VALUE"),
+        help="Fixed alpha loss coefficient (kJ/s/K).",
+    )
+    alpha_group.add_argument(
+        "--alpha-loss-bucket",
+        default=os.getenv("ALPHA_LOSS_BUCKET"),
+        help="Bucket storing alpha loss coefficient readings.",
+    )
+    alpha_group.add_argument(
+        "--alpha-loss-measurement",
+        default=os.getenv("ALPHA_LOSS_MEASUREMENT"),
+        help="Measurement storing alpha loss coefficient readings.",
+    )
+    alpha_group.add_argument(
+        "--alpha-loss-field",
+        default=os.getenv("ALPHA_LOSS_FIELD", "value"),
+        help="Field storing alpha loss coefficient readings.",
+    )
+    alpha_group.add_argument(
+        "--alpha-reactor-temp-bucket",
+        default=os.getenv("ALPHA_REACTOR_TEMP_BUCKET"),
+        help="Bucket storing reactor temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-reactor-temp-measurement",
+        default=os.getenv("ALPHA_REACTOR_TEMP_MEASUREMENT"),
+        help="Measurement storing reactor temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-reactor-temp-field",
+        default=os.getenv("ALPHA_REACTOR_TEMP_FIELD", "value"),
+        help="Field storing reactor temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-reactor-temp-value",
+        type=float,
+        default=_env_float("ALPHA_REACTOR_TEMP_VALUE"),
+        help="Fixed reactor temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-ambient-temp-bucket",
+        default=os.getenv("ALPHA_AMBIENT_TEMP_BUCKET"),
+        help="Bucket storing ambient temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-ambient-temp-measurement",
+        default=os.getenv("ALPHA_AMBIENT_TEMP_MEASUREMENT"),
+        help="Measurement storing ambient temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-ambient-temp-field",
+        default=os.getenv("ALPHA_AMBIENT_TEMP_FIELD", "value"),
+        help="Field storing ambient temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-ambient-temp-value",
+        type=float,
+        default=_env_float("ALPHA_AMBIENT_TEMP_VALUE"),
+        help="Fixed ambient temperature for alpha loss.",
+    )
+    alpha_group.add_argument(
+        "--alpha-loss-measurement-name",
+        default=os.getenv("ALPHA_LOSS_RESULT_MEASUREMENT", "heat_alpha_loss"),
+        help="Measurement name used when storing Q_loss.",
+    )
+
+    fuel_group = parser.add_argument_group(
+        "Fuel cell efficiency inputs",
+        "Arguments used when --formula fuel_cell is selected.",
+    )
+    fuel_group.add_argument(
+        "--fuel-h2-rate-bucket",
+        default=os.getenv("FUEL_H2_RATE_BUCKET"),
+        help="Bucket storing hydrogen consumption rate (kg/s).",
+    )
+    fuel_group.add_argument(
+        "--fuel-h2-rate-measurement",
+        default=os.getenv("FUEL_H2_RATE_MEASUREMENT"),
+        help="Measurement storing hydrogen consumption rate.",
+    )
+    fuel_group.add_argument(
+        "--fuel-h2-rate-field",
+        default=os.getenv("FUEL_H2_RATE_FIELD", "value"),
+        help="Field storing hydrogen consumption rate.",
+    )
+    fuel_group.add_argument(
+        "--fuel-h2-rate-value",
+        type=float,
+        default=_env_float("FUEL_H2_RATE_VALUE"),
+        help="Fixed hydrogen consumption rate (kg/s).",
+    )
+    fuel_group.add_argument(
+        "--fuel-voltage-bucket",
+        default=os.getenv("FUEL_VOLTAGE_BUCKET"),
+        help="Bucket storing fuel-cell voltage readings.",
+    )
+    fuel_group.add_argument(
+        "--fuel-voltage-measurement",
+        default=os.getenv("FUEL_VOLTAGE_MEASUREMENT"),
+        help="Measurement storing fuel-cell voltage readings.",
+    )
+    fuel_group.add_argument(
+        "--fuel-voltage-field",
+        default=os.getenv("FUEL_VOLTAGE_FIELD", "value"),
+        help="Field storing fuel-cell voltage readings.",
+    )
+    fuel_group.add_argument(
+        "--fuel-voltage-value",
+        type=float,
+        default=_env_float("FUEL_VOLTAGE_VALUE"),
+        help="Fixed fuel-cell voltage (V).",
+    )
+    fuel_group.add_argument(
+        "--fuel-current-bucket",
+        default=os.getenv("FUEL_CURRENT_BUCKET"),
+        help="Bucket storing fuel-cell current readings.",
+    )
+    fuel_group.add_argument(
+        "--fuel-current-measurement",
+        default=os.getenv("FUEL_CURRENT_MEASUREMENT"),
+        help="Measurement storing fuel-cell current readings.",
+    )
+    fuel_group.add_argument(
+        "--fuel-current-field",
+        default=os.getenv("FUEL_CURRENT_FIELD", "value"),
+        help="Field storing fuel-cell current readings.",
+    )
+    fuel_group.add_argument(
+        "--fuel-current-value",
+        type=float,
+        default=_env_float("FUEL_CURRENT_VALUE"),
+        help="Fixed fuel-cell current (A).",
+    )
+    fuel_group.add_argument(
+        "--fuel-lhv",
+        type=float,
+        default=float(os.getenv("FUEL_LHV", "241.8")),
+        help="Hydrogen lower heating value (kJ/mol).",
+    )
+    fuel_group.add_argument(
+        "--fuel-h2-molar-mass",
+        type=float,
+        default=float(os.getenv("FUEL_H2_MOLAR_MASS", "0.002016")),
+        help="Hydrogen molar mass (kg/mol).",
+    )
+    fuel_group.add_argument(
+        "--fuel-result-measurement",
+        default=os.getenv("FUEL_RESULT_MEASUREMENT", "fuelcell_efficiency"),
+        help="Measurement used when writing fuel-cell outputs to Influx.",
+    )
+
+    cost_group = parser.add_argument_group(
+        "Cost model inputs",
+        "Arguments used when --formula cost is selected.",
+    )
+    cost_group.add_argument(
+        "--cost-energy-used-bucket",
+        default=os.getenv("COST_ENERGY_USED_BUCKET"),
+        help="Bucket storing energy usage readings (kWh).",
+    )
+    cost_group.add_argument(
+        "--cost-energy-used-measurement",
+        default=os.getenv("COST_ENERGY_USED_MEASUREMENT"),
+        help="Measurement storing energy usage readings.",
+    )
+    cost_group.add_argument(
+        "--cost-energy-used-field",
+        default=os.getenv("COST_ENERGY_USED_FIELD", "value"),
+        help="Field storing energy usage readings.",
+    )
+    cost_group.add_argument(
+        "--cost-energy-used-value",
+        type=float,
+        default=_env_float("COST_ENERGY_USED_VALUE"),
+        help="Fixed energy usage in kWh.",
+    )
+    cost_group.add_argument(
+        "--cost-energy-price-bucket",
+        default=os.getenv("COST_ENERGY_PRICE_BUCKET"),
+        help="Bucket storing energy price data (currency/kWh).",
+    )
+    cost_group.add_argument(
+        "--cost-energy-price-measurement",
+        default=os.getenv("COST_ENERGY_PRICE_MEASUREMENT"),
+        help="Measurement storing energy price data.",
+    )
+    cost_group.add_argument(
+        "--cost-energy-price-field",
+        default=os.getenv("COST_ENERGY_PRICE_FIELD", "value"),
+        help="Field storing energy price data.",
+    )
+    cost_group.add_argument(
+        "--cost-energy-price-value",
+        type=float,
+        default=_env_float("COST_ENERGY_PRICE_VALUE"),
+        help="Fixed energy price per kWh.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-degradation-bucket",
+        default=os.getenv("COST_LOHC_DEGRADATION_BUCKET"),
+        help="Bucket storing LOHC degradation rates (fraction).",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-degradation-measurement",
+        default=os.getenv("COST_LOHC_DEGRADATION_MEASUREMENT"),
+        help="Measurement storing LOHC degradation rates.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-degradation-field",
+        default=os.getenv("COST_LOHC_DEGRADATION_FIELD", "value"),
+        help="Field storing LOHC degradation rates.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-degradation-value",
+        type=float,
+        default=_env_float("COST_LOHC_DEGRADATION_VALUE"),
+        help="Fixed LOHC degradation rate (fraction per period).",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-mass-bucket",
+        default=os.getenv("COST_LOHC_MASS_BUCKET"),
+        help="Bucket storing LOHC inventory mass (kg).",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-mass-measurement",
+        default=os.getenv("COST_LOHC_MASS_MEASUREMENT"),
+        help="Measurement storing LOHC inventory mass.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-mass-field",
+        default=os.getenv("COST_LOHC_MASS_FIELD", "value"),
+        help="Field storing LOHC inventory mass.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-mass-value",
+        type=float,
+        default=_env_float("COST_LOHC_MASS_VALUE"),
+        help="Fixed LOHC inventory mass (kg).",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-price-bucket",
+        default=os.getenv("COST_LOHC_PRICE_BUCKET"),
+        help="Bucket storing LOHC price (currency/kg).",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-price-measurement",
+        default=os.getenv("COST_LOHC_PRICE_MEASUREMENT"),
+        help="Measurement storing LOHC price.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-price-field",
+        default=os.getenv("COST_LOHC_PRICE_FIELD", "value"),
+        help="Field storing LOHC price.",
+    )
+    cost_group.add_argument(
+        "--cost-lohc-price-value",
+        type=float,
+        default=_env_float("COST_LOHC_PRICE_VALUE"),
+        help="Fixed LOHC price per kg.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-degradation-bucket",
+        default=os.getenv("COST_CATALYST_DEGRADATION_BUCKET"),
+        help="Bucket storing catalyst deactivation rates (fraction).",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-degradation-measurement",
+        default=os.getenv("COST_CATALYST_DEGRADATION_MEASUREMENT"),
+        help="Measurement storing catalyst deactivation rates.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-degradation-field",
+        default=os.getenv("COST_CATALYST_DEGRADATION_FIELD", "value"),
+        help="Field storing catalyst deactivation rates.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-degradation-value",
+        type=float,
+        default=_env_float("COST_CATALYST_DEGRADATION_VALUE"),
+        help="Fixed catalyst deactivation rate (fraction per period).",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-mass-bucket",
+        default=os.getenv("COST_CATALYST_MASS_BUCKET"),
+        help="Bucket storing catalyst inventory mass (kg).",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-mass-measurement",
+        default=os.getenv("COST_CATALYST_MASS_MEASUREMENT"),
+        help="Measurement storing catalyst inventory mass.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-mass-field",
+        default=os.getenv("COST_CATALYST_MASS_FIELD", "value"),
+        help="Field storing catalyst inventory mass.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-mass-value",
+        type=float,
+        default=_env_float("COST_CATALYST_MASS_VALUE"),
+        help="Fixed catalyst inventory mass (kg).",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-price-bucket",
+        default=os.getenv("COST_CATALYST_PRICE_BUCKET"),
+        help="Bucket storing catalyst price (currency/kg).",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-price-measurement",
+        default=os.getenv("COST_CATALYST_PRICE_MEASUREMENT"),
+        help="Measurement storing catalyst price.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-price-field",
+        default=os.getenv("COST_CATALYST_PRICE_FIELD", "value"),
+        help="Field storing catalyst price.",
+    )
+    cost_group.add_argument(
+        "--cost-catalyst-price-value",
+        type=float,
+        default=_env_float("COST_CATALYST_PRICE_VALUE"),
+        help="Fixed catalyst price per kg.",
+    )
+    cost_group.add_argument(
+        "--cost-result-measurement",
+        default=os.getenv("COST_RESULT_MEASUREMENT", "cost_breakdown"),
+        help="Measurement name used when storing total costs.",
+    )
+
+    args = parser.parse_args()
+    args.token = cli_defaults["token"]
+    if not getattr(args, "org", None):
+        args.org = cli_defaults["org"]
+    return args
 
 
 def configure_logging(level: str) -> None:
@@ -1379,6 +1878,320 @@ def build_doh_write_target(args: argparse.Namespace) -> Optional[DoHWriteTarget]
     return DoHWriteTarget(bucket=bucket, measurement=measurement, field=args.result_field)
 
 
+def build_dod_config(args: argparse.Namespace) -> DoDConfig:
+    """Translate CLI args into the DoD calculator config."""
+    if not args.token:
+        raise SystemExit("Provide an InfluxDB API token via --token, INFLUX_TOKEN, or NAS defaults.")
+    if not args.org:
+        raise SystemExit("Provide an InfluxDB organization via --org, INFLUX_ORG, or NAS defaults.")
+
+    hydrogen_volume = _build_scalar_source(
+        "dod hydrogen volume",
+        args.dod_h2_volume_bucket,
+        args.dod_h2_volume_measurement,
+        args.dod_h2_volume_field,
+        args.dod_h2_volume_value,
+        required_message="Provide --dod-h2-volume-bucket/measurement/field or --dod-h2-volume-value.",
+    )
+    pressure = _build_scalar_source(
+        "dod pressure",
+        args.dod_pressure_bucket,
+        args.dod_pressure_measurement,
+        args.dod_pressure_field,
+        args.dod_pressure_value,
+        required_message="Provide --dod-pressure-bucket/measurement/field or --dod-pressure-value.",
+    )
+    temperature = _build_scalar_source(
+        "dod temperature",
+        args.dod_temperature_bucket,
+        args.dod_temperature_measurement,
+        args.dod_temperature_field,
+        args.dod_temperature_value,
+        required_message="Provide --dod-temperature-bucket/measurement/field or --dod-temperature-value.",
+    )
+    lohc_mass = _build_scalar_source(
+        "dod lohc mass",
+        args.dod_lohc_mass_bucket,
+        args.dod_lohc_mass_measurement,
+        args.dod_lohc_mass_field,
+        args.dod_lohc_mass_value,
+        required_message="Provide --dod-lohc-mass-bucket/measurement/field or --dod-lohc-mass-value.",
+    )
+    lohc_volume = _build_optional_scalar_source(
+        "dod lohc volume",
+        args.dod_lohc_volume_bucket,
+        args.dod_lohc_volume_measurement,
+        args.dod_lohc_volume_field,
+        args.dod_lohc_volume_value,
+    )
+    lohc_density = _build_optional_scalar_source(
+        "dod lohc density",
+        args.dod_lohc_density_bucket,
+        args.dod_lohc_density_measurement,
+        args.dod_lohc_density_field,
+        args.dod_lohc_density_value,
+    )
+
+    return DoDConfig(
+        url=args.url,
+        token=args.token,
+        org=args.org,
+        tag_key=args.tag_key,
+        experience=args.experience,
+        range_window=args.range_window,
+        hydrogen_volume=hydrogen_volume,
+        pressure=pressure,
+        temperature=temperature,
+        lohc_mass=lohc_mass,
+        lohc_molar_mass=args.dod_lohc_molar_mass,
+        lohc_volume=lohc_volume,
+        lohc_density=lohc_density,
+        gas_constant=args.dod_gas_constant,
+        reactor_volume_liters=args.dod_reactor_volume_liters,
+        volume_to_m3_factor=args.dod_volume_to_m3_factor,
+    )
+
+
+def build_dod_write_target(args: argparse.Namespace) -> Optional[DoDWriteTarget]:
+    """Create the optional Influx destination for DoD values."""
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.dod_h2_volume_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or configure --dod-h2-volume-bucket/--current-bucket."
+        )
+
+    measurement = args.dod_result_measurement
+    if not measurement:
+        raise SystemExit("Provide --dod-result-measurement when --write-results is enabled for DoD.")
+
+    return DoDWriteTarget(bucket=bucket, measurement=measurement, field=args.result_field)
+
+
+def build_fuel_cell_config(args: argparse.Namespace) -> FuelCellConfig:
+    """Translate CLI args into the fuel-cell calculator config."""
+    if not args.token:
+        raise SystemExit("Provide an InfluxDB API token via --token, INFLUX_TOKEN, or NAS defaults.")
+    if not args.org:
+        raise SystemExit("Provide an InfluxDB organization via --org, INFLUX_ORG, or NAS defaults.")
+
+    hydrogen_rate = _build_scalar_source(
+        "fuel hydrogen rate",
+        args.fuel_h2_rate_bucket,
+        args.fuel_h2_rate_measurement,
+        args.fuel_h2_rate_field,
+        args.fuel_h2_rate_value,
+        required_message="Provide --fuel-h2-rate-bucket/measurement/field or --fuel-h2-rate-value.",
+    )
+    voltage = _build_scalar_source(
+        "fuel voltage",
+        args.fuel_voltage_bucket,
+        args.fuel_voltage_measurement,
+        args.fuel_voltage_field,
+        args.fuel_voltage_value,
+        required_message="Provide voltage inputs for fuel-cell calculations.",
+    )
+    current = _build_scalar_source(
+        "fuel current",
+        args.fuel_current_bucket,
+        args.fuel_current_measurement,
+        args.fuel_current_field,
+        args.fuel_current_value,
+        required_message="Provide current inputs for fuel-cell calculations.",
+    )
+
+    return FuelCellConfig(
+        url=args.url,
+        token=args.token,
+        org=args.org,
+        tag_key=args.tag_key,
+        experience=args.experience,
+        range_window=args.range_window,
+        hydrogen_consumption=hydrogen_rate,
+        voltage=voltage,
+        current=current,
+        hydrogen_lhv_kj_per_mol=args.fuel_lhv,
+        hydrogen_molar_mass_kg=args.fuel_h2_molar_mass,
+    )
+
+
+def build_fuel_cell_write_target(args: argparse.Namespace) -> Optional[FuelCellWriteTarget]:
+    """Create the optional Influx destination for fuel-cell metrics."""
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.fuel_h2_rate_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or configure --fuel-h2-rate-bucket/--current-bucket."
+        )
+
+    measurement = args.fuel_result_measurement
+    if not measurement:
+        raise SystemExit("Provide --fuel-result-measurement when --write-results is enabled for fuel-cell calculations.")
+
+    return FuelCellWriteTarget(bucket=bucket, measurement=measurement, field=args.result_field)
+
+
+def build_cost_config(args: argparse.Namespace) -> CostConfig:
+    """Translate CLI args into the cost calculator config."""
+    if not args.token:
+        raise SystemExit("Provide an InfluxDB API token via --token, INFLUX_TOKEN, or NAS defaults.")
+    if not args.org:
+        raise SystemExit("Provide an InfluxDB organization via --org, INFLUX_ORG, or NAS defaults.")
+
+    energy_used = _build_scalar_source(
+        "cost energy used",
+        args.cost_energy_used_bucket,
+        args.cost_energy_used_measurement,
+        args.cost_energy_used_field,
+        args.cost_energy_used_value,
+        required_message="Provide --cost-energy-used inputs (value or bucket/measurement/field).",
+    )
+    energy_price = _build_scalar_source(
+        "cost energy price",
+        args.cost_energy_price_bucket,
+        args.cost_energy_price_measurement,
+        args.cost_energy_price_field,
+        args.cost_energy_price_value,
+        required_message="Provide --cost-energy-price inputs (value or bucket/measurement/field).",
+    )
+    lohc_degradation = _build_optional_scalar_source(
+        "cost lohc degradation",
+        args.cost_lohc_degradation_bucket,
+        args.cost_lohc_degradation_measurement,
+        args.cost_lohc_degradation_field,
+        args.cost_lohc_degradation_value,
+    )
+    lohc_mass = _build_optional_scalar_source(
+        "cost lohc mass",
+        args.cost_lohc_mass_bucket,
+        args.cost_lohc_mass_measurement,
+        args.cost_lohc_mass_field,
+        args.cost_lohc_mass_value,
+    )
+    lohc_price = _build_optional_scalar_source(
+        "cost lohc price",
+        args.cost_lohc_price_bucket,
+        args.cost_lohc_price_measurement,
+        args.cost_lohc_price_field,
+        args.cost_lohc_price_value,
+    )
+    catalyst_degradation = _build_optional_scalar_source(
+        "cost catalyst degradation",
+        args.cost_catalyst_degradation_bucket,
+        args.cost_catalyst_degradation_measurement,
+        args.cost_catalyst_degradation_field,
+        args.cost_catalyst_degradation_value,
+    )
+    catalyst_mass = _build_optional_scalar_source(
+        "cost catalyst mass",
+        args.cost_catalyst_mass_bucket,
+        args.cost_catalyst_mass_measurement,
+        args.cost_catalyst_mass_field,
+        args.cost_catalyst_mass_value,
+    )
+    catalyst_price = _build_optional_scalar_source(
+        "cost catalyst price",
+        args.cost_catalyst_price_bucket,
+        args.cost_catalyst_price_measurement,
+        args.cost_catalyst_price_field,
+        args.cost_catalyst_price_value,
+    )
+
+    return CostConfig(
+        url=args.url,
+        token=args.token,
+        org=args.org,
+        tag_key=args.tag_key,
+        experience=args.experience,
+        range_window=args.range_window,
+        energy_used_kwh=energy_used,
+        energy_price_per_kwh=energy_price,
+        lohc_degradation_rate=lohc_degradation,
+        lohc_inventory_mass=lohc_mass,
+        lohc_price_per_kg=lohc_price,
+        catalyst_deactivation_rate=catalyst_degradation,
+        catalyst_inventory_mass=catalyst_mass,
+        catalyst_price_per_kg=catalyst_price,
+    )
+
+
+def build_cost_write_target(args: argparse.Namespace) -> Optional[CostWriteTarget]:
+    """Create the optional Influx destination for cost metrics."""
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.cost_energy_used_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or configure --cost-energy-used-bucket/--current-bucket."
+        )
+
+    measurement = args.cost_result_measurement
+    if not measurement:
+        raise SystemExit("Provide --cost-result-measurement when --write-results is enabled for cost calculations.")
+
+    return CostWriteTarget(bucket=bucket, measurement=measurement, field=args.result_field)
+
+
+def build_alpha_loss_config(args: argparse.Namespace) -> AlphaLossConfig:
+    """Translate CLI args into the alpha loss calculator config."""
+    alpha_source = _build_scalar_source(
+        "alpha loss",
+        args.alpha_loss_bucket,
+        args.alpha_loss_measurement,
+        args.alpha_loss_field,
+        args.alpha_loss_value,
+        required_message="Provide --alpha-loss value or bucket/measurement/field.",
+    )
+    reactor_temp = _build_scalar_source(
+        "alpha reactor temp",
+        args.alpha_reactor_temp_bucket,
+        args.alpha_reactor_temp_measurement,
+        args.alpha_reactor_temp_field,
+        args.alpha_reactor_temp_value,
+        required_message="Provide reactor temperature for alpha loss calculation.",
+    )
+    ambient_temp = _build_scalar_source(
+        "alpha ambient temp",
+        args.alpha_ambient_temp_bucket,
+        args.alpha_ambient_temp_measurement,
+        args.alpha_ambient_temp_field,
+        args.alpha_ambient_temp_value,
+        required_message="Provide ambient temperature for alpha loss calculation.",
+    )
+    return AlphaLossConfig(
+        url=args.url,
+        token=args.token,
+        org=args.org,
+        tag_key=args.tag_key,
+        experience=args.experience,
+        range_window=args.range_window,
+        alpha_loss=alpha_source,
+        reactor_temp=reactor_temp,
+        ambient_temp=ambient_temp,
+    )
+
+
+def build_alpha_loss_write_target(args: argparse.Namespace) -> Optional[AlphaLossWriteTarget]:
+    """Create the optional Influx destination for alpha loss results."""
+    if not args.write_results:
+        return None
+
+    bucket = args.result_bucket or args.alpha_loss_bucket or args.current_bucket
+    if not bucket:
+        raise SystemExit(
+            "Result bucket is not set. Provide --result-bucket or configure --alpha-loss-bucket/--current-bucket."
+        )
+    measurement = args.alpha_loss_measurement_name
+    if not measurement:
+        raise SystemExit("Provide --alpha-loss-measurement-name when --write-results is enabled for alpha loss.")
+    return AlphaLossWriteTarget(bucket=bucket, measurement=measurement, field=args.result_field)
+
+
 def build_lohc_write_target(args: argparse.Namespace) -> Optional[LohcRateWriteTarget]:
     """Create the optional Influx destination for LOHC rate values."""
     if not args.write_results:
@@ -1650,6 +2463,64 @@ def _replay_doh_experience(
         calculator.close()
 
 
+def _replay_dod_experience(
+    calculator: DoDCalculator,
+    target: Optional[DoDWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored DoD data across the experience window and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No DoD data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        logging.info(
+            "Replayed %s DoD samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("DoD replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
 def _replay_lohc_experience(
     calculator: LohcRateCalculator,
     target: Optional[LohcRateWriteTarget],
@@ -1782,6 +2653,180 @@ def _replay_heat_experience(
         calculator.close()
 
 
+def _replay_fuel_cell_experience(
+    calculator: FuelCellCalculator,
+    target: Optional[FuelCellWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored fuel-cell data across the experience window and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No fuel-cell data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        logging.info(
+            "Replayed %s fuel-cell samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("Fuel-cell replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
+def _replay_cost_experience(
+    calculator: CostCalculator,
+    target: Optional[CostWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored cost data across the experience window and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No cost data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        logging.info(
+            "Replayed %s cost samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("Cost replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
+def _replay_alpha_loss_experience(
+    calculator: AlphaLossCalculator,
+    target: Optional[AlphaLossWriteTarget],
+    emit_fn,
+    args: argparse.Namespace,
+) -> None:
+    """Replay stored alpha loss data across the experience window and exit."""
+
+    if args.sample_interval <= 0:
+        raise SystemExit("--sample-interval must be positive when replaying an experience.")
+
+    start_override = _parse_timestamp_arg("--experience-start", args.experience_start)
+    end_override = _parse_timestamp_arg("--experience-end", args.experience_end)
+    if start_override and end_override and end_override < start_override:
+        raise SystemExit("--experience-end must not be earlier than --experience-start.")
+
+    window_delta = _parse_range_window("--range-window", args.range_window)
+    now = datetime.now(timezone.utc)
+    query_start = start_override or (now - window_delta)
+    query_end = end_override or now
+
+    try:
+        generator, actual_start, actual_end = calculator.iter_experience(
+            query_start,
+            query_end,
+            args.sample_interval,
+        )
+        if actual_start is None or actual_end is None:
+            logging.info(
+                "No alpha-loss data found for experience '%s' between %s and %s.",
+                calculator.config.experience,
+                query_start.isoformat(),
+                query_end.isoformat(),
+            )
+            return
+
+        sample_count = 0
+        for result in generator:
+            if target:
+                calculator.write_result(result, target)
+            if args.replay_emit:
+                emit_fn(result, args.output, streaming=True)
+            sample_count += 1
+
+        logging.info(
+            "Replayed %s alpha-loss samples for experience '%s' between %s and %s.",
+            sample_count,
+            calculator.config.experience,
+            actual_start.isoformat(),
+            actual_end.isoformat(),
+        )
+    except Exception as exc:  # pragma: no cover - CLI safeguard
+        logging.exception("Alpha loss replay failed: %s", exc)
+        sys.exit(1)
+    finally:
+        calculator.close()
+
+
 def _run_single_sample(calculator, target, emit_fn, args: argparse.Namespace, formula_label: str) -> None:
     """Compute one sample for the specified calculator and exit."""
 
@@ -1831,6 +2876,20 @@ def _doh_result_to_dict(result: DoHResult) -> dict:
     }
 
 
+def _dod_result_to_dict(result: DoDResult) -> dict:
+    """Convert the DoD result into a serializable dict."""
+    return {
+        "experience": result.experience,
+        "timestamp": result.timestamp.isoformat(),
+        "dod_ratio": result.dod_ratio,
+        "dod_percent": result.dod_ratio * 100.0,
+        "released_h2_moles": result.released_h2_moles,
+        "max_h2_moles": result.max_h2_moles,
+        "hydrogen_volume_liters": result.hydrogen_volume_liters,
+        "net_hydrogen_volume_liters": result.net_hydrogen_volume_liters,
+    }
+
+
 def _emit_faraday_result(result: FaradayResult, output: str, streaming: bool = False) -> None:
     """Print CLI output in text or JSON form."""
     if output == "json":
@@ -1871,6 +2930,28 @@ def _emit_doh_result(result: DoHResult, output: str, streaming: bool = False) ->
         f"Stored H2: {result.stored_h2_moles:.6f} mol",
         f"Max H2: {result.max_h2_moles:.6f} mol",
         f"Net H2 volume: {result.net_hydrogen_volume_liters:.3f} L",
+    ]
+    print("\n".join(lines), flush=True)
+
+
+def _emit_dod_result(result: DoDResult, output: str, streaming: bool = False) -> None:
+    """Print DoD output in text or JSON form."""
+    if output == "json":
+        payload = (
+            json.dumps(_dod_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_dod_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
+        return
+
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"DoD: {result.dod_ratio * 100.0:.3f} %",
+        f"Released H2: {result.released_h2_moles:.6f} mol",
+        f"Max H2: {result.max_h2_moles:.6f} mol",
+        f"Released H2 volume: {result.net_hydrogen_volume_liters:.3f} L",
     ]
     print("\n".join(lines), flush=True)
 
@@ -1934,6 +3015,44 @@ def _heat_result_to_dict(result: HeatBalanceResult) -> dict:
     }
 
 
+def _fuel_result_to_dict(result: FuelCellResult) -> dict:
+    """Convert fuel-cell output to a serializable dict."""
+    return {
+        "experience": result.experience,
+        "timestamp": result.timestamp.isoformat(),
+        "voltage_v": result.voltage_v,
+        "current_a": result.current_a,
+        "power_w": result.power_w,
+        "hydrogen_consumption_kg_s": result.hydrogen_consumption_kg_s,
+        "hydrogen_power_w": result.hydrogen_power_w,
+        "efficiency_ratio": result.efficiency_ratio,
+    }
+
+
+def _cost_result_to_dict(result: CostResult) -> dict:
+    """Convert cost output to a serializable dict."""
+    return {
+        "experience": result.experience,
+        "timestamp": result.timestamp.isoformat(),
+        "energy_cost": result.energy_cost,
+        "lohc_cost": result.lohc_cost,
+        "catalyst_cost": result.catalyst_cost,
+        "total_cost": result.total_cost,
+    }
+
+
+def _alpha_loss_result_to_dict(result: AlphaLossResult) -> dict:
+    """Convert alpha loss result into dict."""
+    return {
+        "experience": result.experience,
+        "timestamp": result.timestamp.isoformat(),
+        "alpha_loss": result.alpha_loss,
+        "reactor_temp": result.reactor_temp,
+        "ambient_temp": result.ambient_temp,
+        "q_loss": result.q_loss,
+    }
+
+
 def _emit_heat_result(result: HeatBalanceResult, output: str, streaming: bool = False) -> None:
     """Print heat balance output."""
     if output == "json":
@@ -1969,6 +3088,74 @@ def _emit_heat_result(result: HeatBalanceResult, output: str, streaming: bool = 
     print("\n".join(lines), flush=True)
 
 
+def _emit_fuel_result(result: FuelCellResult, output: str, streaming: bool = False) -> None:
+    """Print fuel-cell efficiency output."""
+    if output == "json":
+        payload = (
+            json.dumps(_fuel_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_fuel_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
+        return
+
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"Voltage: {result.voltage_v:.3f} V",
+        f"Current: {result.current_a:.3f} A",
+        f"Power: {result.power_w:.3f} W",
+        f"H2 rate: {result.hydrogen_consumption_kg_s:.6f} kg/s",
+        f"H2 power: {result.hydrogen_power_w:.3f} W",
+        f"Efficiency: {result.efficiency_ratio * 100.0:.2f} %",
+    ]
+    print("\n".join(lines), flush=True)
+
+
+def _emit_cost_result(result: CostResult, output: str, streaming: bool = False) -> None:
+    """Print cost aggregation output."""
+    if output == "json":
+        payload = (
+            json.dumps(_cost_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_cost_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
+        return
+
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"Energy cost: {result.energy_cost:.3f}",
+        f"LOHC cost: {result.lohc_cost:.3f}",
+        f"Catalyst cost: {result.catalyst_cost:.3f}",
+        f"Total cost: {result.total_cost:.3f}",
+    ]
+    print("\n".join(lines), flush=True)
+
+
+def _emit_alpha_loss_result(result: AlphaLossResult, output: str, streaming: bool = False) -> None:
+    """Print alpha loss output."""
+    if output == "json":
+        payload = (
+            json.dumps(_alpha_loss_result_to_dict(result), separators=(",", ":"))
+            if streaming
+            else json.dumps(_alpha_loss_result_to_dict(result), indent=2)
+        )
+        print(payload, flush=True)
+        return
+
+    lines = [
+        f"Experience: {result.experience}",
+        f"Timestamp: {result.timestamp.isoformat()}",
+        f"Alpha: {result.alpha_loss:.4f} kJ/s/K",
+        f"Reactor temp: {result.reactor_temp:.3f}",
+        f"Ambient temp: {result.ambient_temp:.3f}",
+        f"Q_loss: {result.q_loss:.3f} kJ/s",
+    ]
+    print("\n".join(lines), flush=True)
+
+
 def main() -> None:
     """Entrypoint that wires parsing, computation, optional writes, and output."""
     nas_defaults = resolve_defaults()
@@ -1996,6 +3183,16 @@ def main() -> None:
             _run_single_sample(calculator, doh_target, _emit_doh_result, args, "DoH")
         return
 
+    if args.formula == "dod":
+        dod_config = build_dod_config(args)
+        dod_target = build_dod_write_target(args)
+        calculator = DoDCalculator(dod_config)
+        if experience_status == "done":
+            _replay_dod_experience(calculator, dod_target, _emit_dod_result, args)
+        else:
+            _run_single_sample(calculator, dod_target, _emit_dod_result, args, "DoD")
+        return
+
     if args.formula == "lohc_rate":
         lohc_config = build_lohc_rate_config(args)
         lohc_target = build_lohc_write_target(args)
@@ -2004,6 +3201,36 @@ def main() -> None:
             _replay_lohc_experience(calculator, lohc_target, _emit_lohc_result, args)
         else:
             _run_single_sample(calculator, lohc_target, _emit_lohc_result, args, "LOHC rate")
+        return
+
+    if args.formula == "alpha_loss":
+        alpha_config = build_alpha_loss_config(args)
+        alpha_target = build_alpha_loss_write_target(args)
+        calculator = AlphaLossCalculator(alpha_config)
+        if experience_status == "done":
+            _replay_alpha_loss_experience(calculator, alpha_target, _emit_alpha_loss_result, args)
+        else:
+            _run_single_sample(calculator, alpha_target, _emit_alpha_loss_result, args, "Alpha loss")
+        return
+
+    if args.formula == "fuel_cell":
+        fuel_config = build_fuel_cell_config(args)
+        fuel_target = build_fuel_cell_write_target(args)
+        calculator = FuelCellCalculator(fuel_config)
+        if experience_status == "done":
+            _replay_fuel_cell_experience(calculator, fuel_target, _emit_fuel_result, args)
+        else:
+            _run_single_sample(calculator, fuel_target, _emit_fuel_result, args, "Fuel cell")
+        return
+
+    if args.formula == "cost":
+        cost_config = build_cost_config(args)
+        cost_target = build_cost_write_target(args)
+        calculator = CostCalculator(cost_config)
+        if experience_status == "done":
+            _replay_cost_experience(calculator, cost_target, _emit_cost_result, args)
+        else:
+            _run_single_sample(calculator, cost_target, _emit_cost_result, args, "Cost")
         return
 
     heat_config = build_heat_balance_config(args)

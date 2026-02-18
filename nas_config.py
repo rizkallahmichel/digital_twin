@@ -34,7 +34,7 @@ def resolve_defaults() -> NasInfluxDefaults:
         influx_port=8086,
         username="upscalehub",
         password="upscalehub",
-        token="P3Z92mD4U0oduLSpzf_HKoWYqVsck4-e_rKJqWHqjKRbhREOtOKQ-CS7x4TAw-vrXFQJNlJ27ylAWPtVZdv3gg==",
+        token="XEVTtPZKXRuyg0Nq4fdHuU0m10WUpKyrGAP5FTOhCr0M-L7OfrRA7flkzEGBOD1VE89KziRqvI_seh6534e30Q==",
         org="upscalehub",
     )
 
